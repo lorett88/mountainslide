@@ -719,7 +719,25 @@ async function pageDashboard(c){
     return;
   }
 
-  // manager / owner
+  if(State.user.role==='manager'){
+    const acts=[
+      {go:'pendapatan', ic:'revenue', t:'Harga & Kategori Tiket', d:'Atur harga jual tiap kategori tiket & video.'},
+      {go:'bagihasil',  ic:'share',   t:'Bagi Hasil',             d:'Hitung bagi hasil tiket & video ke KPH.'},
+      {go:'karyawan',   ic:'user',    t:'Karyawan',               d:'Kelola data karyawan & upah harian.'},
+      {go:'gaji',       ic:'receipt', t:'Gaji',                   d:'Hitung gaji dari rekap kehadiran.'},
+    ];
+    c.innerHTML = pageHead('Halo, '+(State.user.full_name||State.user.username).split(' ')[0]+' 👋','Pintasan tugas manajer.','')
+      +'<div class="grid g-2">'
+      + acts.map(a=>'<button class="card" data-goto="'+a.go+'" style="text-align:left;border:1px solid var(--line);cursor:pointer;background:var(--card);font:inherit;width:100%"><div class="card-pad" style="display:flex;gap:14px;align-items:flex-start">'
+          +'<span class="s-icon ic-pine" style="flex:none">'+icon(a.ic,20)+'</span>'
+          +'<div><div style="font-weight:700;font-size:15px;margin-bottom:2px;color:var(--ink)">'+a.t+'</div><div class="muted small">'+a.d+'</div></div>'
+        +'</div></button>').join('')
+      +'</div>';
+    c.querySelectorAll('[data-goto]').forEach(b=> b.addEventListener('click', ()=>{ State.page=b.dataset.goto; renderApp(); }));
+    return;
+  }
+
+  // owner
   const bal=await computeBalances();
   const byCat={}; mRevs.forEach(r=>{ const cat=map[r.kategori_id]; const k=cat?cat.name:'Lainnya'; byCat[k]=(byCat[k]||0)+r.amount; });
   const expByCat={}; mExps.forEach(e=>{ expByCat[e.kategori]=(expByCat[e.kategori]||0)+e.amount; });
