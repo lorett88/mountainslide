@@ -375,6 +375,7 @@ function fmtDate(s){ if(!s) return '-'; const p=String(s).slice(0,10).split('-')
 function fmtDateTime(s){ if(!s) return '-'; const d=new Date(s); if(isNaN(d)) return fmtDate(s); return fmtDate(s)+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
 function monthRange(year, mIdx){ const start=year+'-'+String(mIdx+1).padStart(2,'0')+'-01'; const last=new Date(year,mIdx+1,0).getDate(); const end=year+'-'+String(mIdx+1).padStart(2,'0')+'-'+String(last).padStart(2,'0'); return {start,end}; }
 function halfRange(year, mIdx, half){ const last=new Date(year,mIdx+1,0).getDate(); const mm=String(mIdx+1).padStart(2,'0'); if(half===1) return {start:year+'-'+mm+'-01', end:year+'-'+mm+'-15', label:'1–15 '+MONTHS[mIdx]+' '+year}; return {start:year+'-'+mm+'-16', end:year+'-'+mm+'-'+String(last).padStart(2,'0'), label:'16–'+last+' '+MONTHS[mIdx]+' '+year}; }
+function videoRange(year, mIdx){ const end=year+'-'+String(mIdx+1).padStart(2,'0')+'-15'; let py=year, pm=mIdx-1; if(pm<0){ pm=11; py=year-1; } const start=py+'-'+String(pm+1).padStart(2,'0')+'-16'; return {start, end, label:'16 '+MONTHS[pm]+' – 15 '+MONTHS[mIdx]+' '+year}; }
 function inRange(d, start, end){ const x=String(d).slice(0,10); return x>=start && x<=end; }
 function sum(arr, f){ return arr.reduce((a,b)=> a+(f?f(b):b), 0); }
 function initials(name){ if(!name) return '?'; const p=name.trim().split(/\s+/); return (p[0][0]+(p[1]?p[1][0]:'')).toUpperCase(); }
@@ -481,7 +482,7 @@ function loadLocal(){ try{ return JSON.parse(localStorage.getItem(LS_DB)) || {};
 function saveLocal(db){ localStorage.setItem(LS_DB, JSON.stringify(db)); }
 function loadConn(){ try{ return JSON.parse(localStorage.getItem(LS_CONN)); }catch(e){ return null; } }
 
-function DEFAULT_SETTINGS(){ return { id:'app', nama_usaha:'Mountain Slide', bank_nama:'', bank_rekening:'', bank_atasnama:'', pct_pengelola:12, pct_negara:18, saldo_awal_kas:0, saldo_awal_rekening:0 }; }
+function DEFAULT_SETTINGS(){ return { id:'app', nama_usaha:'Mountain Slide', bank_nama:'', bank_rekening:'', bank_atasnama:'', pct_pengelola:12, pct_negara:18, pct_pnbp:2.5, pct_kph:30, saldo_awal_kas:0, saldo_awal_rekening:0 }; }
 
 function ensureLocalSeed(){
   const db=loadLocal();
@@ -524,13 +525,13 @@ const NAV = [
   { key:'dashboard',  label:'Dasbor',          icon:'dashboard', roles:['owner','manager','spv','staff'] },
   { key:'pendapatan', label:'Pendapatan',       icon:'revenue',   roles:['owner','manager','spv','staff'] },
   { key:'pengeluaran',label:'Pengeluaran',      icon:'expense',   roles:['owner','spv'] },
-  { key:'kas',        label:'Kas & Rekening',   icon:'wallet',    roles:['owner','manager'] },
+  { key:'kas',        label:'Kas & Rekening',   icon:'wallet',    roles:['owner'] },
   { key:'bagihasil',  label:'Bagi Hasil',       icon:'share',     roles:['owner','manager'] },
   { key:'karyawan',   label:'Karyawan',         icon:'user',      roles:['owner','manager'] },
   { key:'absensi',    label:'Absensi',          icon:'calendar',  roles:['owner','spv'] },
   { key:'gaji',       label:'Gaji',             icon:'receipt',   roles:['owner','manager'] },
   { key:'aset',       label:'Aset',             icon:'asset',     roles:['owner','spv'] },
-  { key:'laporan',    label:'Laporan',          icon:'report',    roles:['owner','manager','spv'] },
+  { key:'laporan',    label:'Laporan',          icon:'report',    roles:['owner'] },
   { key:'pengaturan', label:'Pengaturan',       icon:'settings',  roles:['owner'] },
 ];
 function canSee(key){ const n=NAV.find(x=>x.key===key); return n && n.roles.includes(State.user.role); }
@@ -1060,7 +1061,7 @@ async function pageBagiHasil(c){
   const settlements=(await DB.all('settlements')).sort((a,b)=> (b.end||'').localeCompare(a.end||'') || (b.created_at||'').localeCompare(a.created_at||''));
   c.innerHTML = pageHead('Bagi Hasil','Tiket: 2× sebulan (tgl 15 & akhir bulan) · Video: 1× sebulan (tgl 15)',
       '<button class="btn btn-ghost" id="new-bh-video">'+icon('plus',16)+' Bagi Hasil Video</button><button class="btn btn-accent" id="new-bh">'+icon('plus',18)+' Bagi Hasil Tiket</button>')
-    +'<div class="split-help mb-lg">'+icon('info',16)+' &nbsp;<b>Tiket:</b> Nilai Tiket = jumlah tiket × nominal/tiket; Dasar = Pendapatan tiket − Nilai Tiket; lalu Pengelola '+settings.pct_pengelola+'% &amp; Negara '+settings.pct_negara+'%. <b>Video:</b> Dasar = total pendapatan video (tanpa potongan), lalu dibagi dengan persentase yang sama (bisa diubah).</div>'
+    +'<div class="split-help mb-lg">'+icon('info',16)+' &nbsp;<b>Tiket:</b> PNBP = 2,5% × total pendapatan; Dasar = Pendapatan − PNBP − (jumlah tiket × nominal); Bagi hasil KPH = 30% × Dasar. <b>Total dikirim ke KPH = PNBP + nilai tiket + bagi hasil 30%</b>. <b>Video:</b> periode tgl 16 s/d 15 bulan berikutnya; bagi hasil KPH 30% dari total video. Semua persen bisa diubah.</div>'
     +'<div class="card"><div class="card-head"><h3>Riwayat bagi hasil</h3></div><div id="bh-list"></div></div>';
   $('#new-bh').addEventListener('click', ()=> openBagiHasilCalc(settings));
   $('#new-bh-video').addEventListener('click', ()=> openVideoBagiHasilCalc(settings));
@@ -1068,21 +1069,22 @@ async function pageBagiHasil(c){
 }
 function drawSettlements(list){
   if(list.length===0){ $('#bh-list').innerHTML=emptyState('share','Belum ada bagi hasil','Hitung bagi hasil tiket atau video lewat tombol di atas.'); return; }
-  $('#bh-list').innerHTML='<div class="table-wrap"><table class="tbl"><thead><tr><th>Periode</th><th>Jenis</th><th class="num">Pendapatan</th><th class="num">Dasar</th><th class="num">Pengelola</th><th class="num">Negara</th><th>Status bayar</th><th></th></tr></thead><tbody>'
+  const kphOf=s=> s.total_kph!=null ? s.total_kph : ((s.amount_negara||0)+(s.pnbp||0)+(s.total_nilai_tiket||0));
+  const sisaOf=s=> s.sisa!=null ? s.sisa : ((s.total_pendapatan||0)-kphOf(s));
+  $('#bh-list').innerHTML='<div class="table-wrap"><table class="tbl"><thead><tr><th>Periode</th><th>Jenis</th><th class="num">Pendapatan</th><th class="num">Total ke KPH</th><th class="num">Sisa pengelola</th><th>Status kirim</th><th></th></tr></thead><tbody>'
     + list.map(s=>{ const isVid=s.jenis==='video';
       return '<tr><td><b>'+esc(s.periode_label)+'</b><div class="muted small">'+fmtDate(s.start)+' – '+fmtDate(s.end)+'</div></td>'
         +'<td><span class="badge '+(isVid?'badge-video':'badge-tiket')+'">'+(isVid?'Video':'Tiket')+'</span></td>'
         +'<td class="num">'+rp(s.total_pendapatan)+'</td>'
-        +'<td class="num">'+rp(s.net)+'</td>'
-        +'<td class="num pos strong">'+rp(s.amount_pengelola)+'</td>'
-        +'<td class="num strong" style="color:var(--gold)">'+rp(s.amount_negara)+'</td>'
+        +'<td class="num strong" style="color:var(--gold)">'+rp(kphOf(s))+'</td>'
+        +'<td class="num pos strong">'+rp(sisaOf(s))+'</td>'
         +'<td><span class="badge badge-grey" id="paybadge-'+s.id+'">memuat…</span></td>'
         +'<td class="num"><div class="t-actions"><button class="iconbtn" data-view-bh="'+s.id+'">'+icon('receipt',15)+'</button><button class="iconbtn del" data-del-bh="'+s.id+'">'+icon('trash',15)+'</button></div></td></tr>';
     }).join('')+'</tbody></table></div>';
-  // status bayar async
+  // status kirim ke KPH async
   DB.all('settlement_payments').then(pays=>{
-    list.forEach(s=>{ const el=$('#paybadge-'+s.id); if(!el) return; const ps=pays.filter(p=>p.settlement_id===s.id); const totPay=sum(ps,p=>p.amount); const target=s.amount_pengelola+s.amount_negara;
-      if(ps.length===0){ el.className='badge badge-warn'; el.textContent='Belum dibayar'; }
+    list.forEach(s=>{ const el=$('#paybadge-'+s.id); if(!el) return; const ps=pays.filter(p=>p.settlement_id===s.id); const totPay=sum(ps,p=>p.amount); const target=kphOf(s);
+      if(ps.length===0){ el.className='badge badge-warn'; el.textContent='Belum dikirim'; }
       else if(totPay>=target-1){ el.className='badge badge-pos'; el.textContent='Lunas'; }
       else { el.className='badge badge-qris'; el.textContent='Sebagian'; }
     });
@@ -1135,35 +1137,40 @@ function renderBhTable(rows, rng, settings){
     +'</tbody></table></div></div>'
     +'<div class="grid g-2">'
       +'<div class="card card-pad" style="box-shadow:none;border-color:var(--line)">'
-        +'<div class="field" style="margin-bottom:12px"><label class="label">Persentase Pengelola (%)</label><input class="input tnum" id="bh-pp" inputmode="decimal" value="'+settings.pct_pengelola+'" style="width:120px"></div>'
-        +'<div class="field" style="margin-bottom:0"><label class="label">Persentase Negara (%)</label><input class="input tnum" id="bh-pn" inputmode="decimal" value="'+settings.pct_negara+'" style="width:120px"></div>'
+        +'<div class="field" style="margin-bottom:12px"><label class="label">PNBP (%)</label><input class="input tnum" id="bh-pnbp" inputmode="decimal" value="'+(settings.pct_pnbp!=null?settings.pct_pnbp:2.5)+'" style="width:120px"></div>'
+        +'<div class="field" style="margin-bottom:0"><label class="label">Bagi hasil KPH (%)</label><input class="input tnum" id="bh-kph" inputmode="decimal" value="'+(settings.pct_kph!=null?settings.pct_kph:30)+'" style="width:120px"></div>'
       +'</div>'
       +'<div class="card card-pad" id="bh-summary" style="box-shadow:none;border-color:var(--line)"></div>'
     +'</div>';
   const recalc=()=>{
     let totPend=0, totNilai=0;
     rows.forEach(r=>{ const inp=cont.querySelector('.bh-nom[data-id="'+r.id+'"]'); r.nominal=num(inp.value); const nilai=r.qty*r.nominal; totPend+=r.pendapatan; totNilai+=nilai; const cell=inp.closest('tr').querySelector('.bh-nilai'); cell.textContent=rp(nilai); });
-    const pp=parseFloat($('#bh-pp').value)||0, pn=parseFloat($('#bh-pn').value)||0;
-    const net=totPend-totNilai; const aPeng=net*pp/100, aNeg=net*pn/100; const sisa=net-aPeng-aNeg;
+    const ppnbp=parseFloat($('#bh-pnbp').value)||0, pkph=parseFloat($('#bh-kph').value)||0;
+    const pnbp=totPend*ppnbp/100;
+    const net=totPend-pnbp-totNilai;
+    const shareKph=net*pkph/100;
+    const totalKph=pnbp+totNilai+shareKph;
+    const sisa=totPend-totalKph;
     $('#bh-summary').innerHTML =
       '<div class="kpi-line"><span class="k-l">Total pendapatan tiket</span><span class="k-v">'+rp(totPend)+'</span></div>'
-      +'<div class="kpi-line"><span class="k-l">Total nilai tiket</span><span class="k-v">−'+rp(totNilai)+'</span></div>'
+      +'<div class="kpi-line"><span class="k-l">PNBP ('+ppnbp+'%)</span><span class="k-v">−'+rp(pnbp)+'</span></div>'
+      +'<div class="kpi-line"><span class="k-l">Nilai tiket (qty × nominal)</span><span class="k-v">−'+rp(totNilai)+'</span></div>'
       +'<div class="kpi-line big"><span class="k-l">Dasar bagi hasil</span><span class="k-v">'+rp(net)+'</span></div>'
-      +'<div class="kpi-line"><span class="k-l">Pengelola ('+pp+'%)</span><span class="k-v pos">'+rp(aPeng)+'</span></div>'
-      +'<div class="kpi-line"><span class="k-l">Negara ('+pn+'%)</span><span class="k-v" style="color:var(--gold)">'+rp(aNeg)+'</span></div>'
-      +'<div class="kpi-line"><span class="k-l">Sisa (operasional pengelola)</span><span class="k-v muted">'+rp(sisa)+'</span></div>';
-    // snapshot utk disimpan
+      +'<div class="kpi-line"><span class="k-l">Bagi hasil KPH ('+pkph+'%)</span><span class="k-v">'+rp(shareKph)+'</span></div>'
+      +'<div class="kpi-line big" style="border-top:1px solid var(--line);margin-top:6px;padding-top:10px"><span class="k-l" style="color:var(--gold)">Total dikirim ke KPH</span><span class="k-v" style="color:var(--gold)">'+rp(totalKph)+'</span></div>'
+      +'<div class="muted small" style="margin:-4px 0 8px">PNBP + nilai tiket + bagi hasil 30%</div>'
+      +'<div class="kpi-line"><span class="k-l">Sisa untuk pengelola</span><span class="k-v pos">'+rp(sisa)+'</span></div>';
     window.__bhSnap = {
       jenis:'tiket', periode_label:rng.label, start:rng.start, end:rng.end,
       breakdown: rows.map(r=>({ name:r.name, qty:r.qty, nominal:r.nominal, nilai_tiket:r.qty*r.nominal, pendapatan:r.pendapatan })),
-      total_pendapatan:totPend, total_nilai_tiket:totNilai, net,
-      pct_pengelola:pp, pct_negara:pn, amount_pengelola:aPeng, amount_negara:aNeg, sisa,
+      total_pendapatan:totPend, total_nilai_tiket:totNilai, pct_pnbp:ppnbp, pnbp, net,
+      pct_kph:pkph, share_kph:shareKph, total_kph:totalKph, sisa,
       created_by:State.user.id, created_by_name:State.user.full_name||State.user.username
     };
     const ok=document.querySelector('#modal-ok'); if(ok) ok.disabled = totPend<=0;
   };
   cont.querySelectorAll('.bh-nom').forEach(i=> i.addEventListener('input', recalc));
-  $('#bh-pp').addEventListener('input', recalc); $('#bh-pn').addEventListener('input', recalc);
+  $('#bh-pnbp').addEventListener('input', recalc); $('#bh-kph').addEventListener('input', recalc);
   recalc();
 }
 
@@ -1171,9 +1178,9 @@ async function openVideoBagiHasilCalc(settings){
   const now=new Date();
   const monthOpts=MONTHS_FULL.map((m,i)=>'<option value="'+i+'" '+(i===now.getMonth()?'selected':'')+'>'+m+'</option>').join('');
   const yearOpts=[now.getFullYear()-1, now.getFullYear()].map(y=>'<option value="'+y+'" '+(y===now.getFullYear()?'selected':'')+'>'+y+'</option>').join('');
-  openModal({ wide:true, title:'Bagi Hasil Video', sub:'1× sebulan — total pendapatan video dibagi',
+  openModal({ wide:true, title:'Bagi Hasil Video', sub:'Periode tgl 16 bulan lalu s/d 15 bulan dipilih',
     body:'<div class="filterbar" style="margin-bottom:18px">'
-      +'<div class="field"><label class="label">Bulan</label><select class="select" id="bv-month">'+monthOpts+'</select></div>'
+      +'<div class="field"><label class="label">Sampai bulan (tgl 15)</label><select class="select" id="bv-month">'+monthOpts+'</select></div>'
       +'<div class="field"><label class="label">Tahun</label><select class="select" id="bv-year">'+yearOpts+'</select></div>'
       +'<button class="btn btn-primary btn-sm" id="bv-load">Tarik data</button>'
     +'</div><div id="bv-calc"></div>',
@@ -1182,7 +1189,7 @@ async function openVideoBagiHasilCalc(settings){
   });
   $('#bv-load').addEventListener('click', async ()=>{
     const y=Number($('#bv-year').value), m=Number($('#bv-month').value);
-    const rng=monthRange(y,m); const label='Video '+MONTHS[m]+' '+y;
+    const rng=videoRange(y,m); const label='Video '+rng.label;
     const {cats}=await revCatMap(); const videoIds=cats.filter(c=>c.type==='video').map(c=>c.id);
     const revs=await DB.all('revenues');
     const vrevs=revs.filter(r=> videoIds.includes(r.kategori_id) && inRange(r.tanggal,rng.start,rng.end));
@@ -1196,46 +1203,49 @@ function renderVideoBhTable(data, settings){
     +'<div class="kpi-line"><span class="k-l">Jumlah video terjual</span><span class="k-v">'+data.qty+'</span></div></div></div>'
     +'<div class="grid g-2">'
       +'<div class="card card-pad" style="box-shadow:none;border-color:var(--line)">'
-        +'<div class="field" style="margin-bottom:12px"><label class="label">Persentase Pengelola (%)</label><input class="input tnum" id="bv-pp" inputmode="decimal" value="'+settings.pct_pengelola+'" style="width:120px"></div>'
-        +'<div class="field" style="margin-bottom:0"><label class="label">Persentase Negara (%)</label><input class="input tnum" id="bv-pn" inputmode="decimal" value="'+settings.pct_negara+'" style="width:120px"></div>'
+        +'<div class="field" style="margin-bottom:0"><label class="label">Bagi hasil KPH (%)</label><input class="input tnum" id="bv-kph" inputmode="decimal" value="'+(settings.pct_kph!=null?settings.pct_kph:30)+'" style="width:120px"></div>'
       +'</div>'
       +'<div class="card card-pad" id="bv-summary" style="box-shadow:none;border-color:var(--line)"></div>'
     +'</div>';
   const recalc=()=>{
-    const pp=parseFloat($('#bv-pp').value)||0, pn=parseFloat($('#bv-pn').value)||0;
-    const net=data.totVideo; const aPeng=net*pp/100, aNeg=net*pn/100; const sisa=net-aPeng-aNeg;
+    const pkph=parseFloat($('#bv-kph').value)||0;
+    const net=data.totVideo; const shareKph=net*pkph/100; const totalKph=shareKph; const sisa=net-totalKph;
     $('#bv-summary').innerHTML='<div class="kpi-line big"><span class="k-l">Dasar bagi hasil (video)</span><span class="k-v">'+rp(net)+'</span></div>'
-      +'<div class="kpi-line"><span class="k-l">Pengelola ('+pp+'%)</span><span class="k-v pos">'+rp(aPeng)+'</span></div>'
-      +'<div class="kpi-line"><span class="k-l">Negara ('+pn+'%)</span><span class="k-v" style="color:var(--gold)">'+rp(aNeg)+'</span></div>'
-      +'<div class="kpi-line"><span class="k-l">Sisa (pengelola)</span><span class="k-v muted">'+rp(sisa)+'</span></div>';
-    window.__bvSnap={ jenis:'video', periode_label:data.label, start:data.start, end:data.end, breakdown:[{name:'Video', qty:data.qty, nominal:0, nilai_tiket:0, pendapatan:data.totVideo}], total_pendapatan:data.totVideo, total_nilai_tiket:0, net, pct_pengelola:pp, pct_negara:pn, amount_pengelola:aPeng, amount_negara:aNeg, sisa, created_by:State.user.id, created_by_name:State.user.full_name||State.user.username };
+      +'<div class="kpi-line"><span class="k-l">Bagi hasil KPH ('+pkph+'%)</span><span class="k-v">'+rp(shareKph)+'</span></div>'
+      +'<div class="kpi-line big" style="border-top:1px solid var(--line);margin-top:6px;padding-top:10px"><span class="k-l" style="color:var(--gold)">Total dikirim ke KPH</span><span class="k-v" style="color:var(--gold)">'+rp(totalKph)+'</span></div>'
+      +'<div class="kpi-line"><span class="k-l">Sisa untuk pengelola</span><span class="k-v pos">'+rp(sisa)+'</span></div>';
+    window.__bvSnap={ jenis:'video', periode_label:data.label, start:data.start, end:data.end, breakdown:[{name:'Video', qty:data.qty, nominal:0, nilai_tiket:0, pendapatan:data.totVideo}], total_pendapatan:data.totVideo, total_nilai_tiket:0, pct_pnbp:0, pnbp:0, net, pct_kph:pkph, share_kph:shareKph, total_kph:totalKph, sisa, created_by:State.user.id, created_by_name:State.user.full_name||State.user.username };
     const ok=$('#modal-ok'); if(ok) ok.disabled = data.totVideo<=0;
   };
-  $('#bv-pp').addEventListener('input', recalc); $('#bv-pn').addEventListener('input', recalc);
+  $('#bv-kph').addEventListener('input', recalc);
   recalc();
 }
 
 async function openSettlementDetail(s){
   const pays=(await DB.all('settlement_payments')).filter(p=>p.settlement_id===s.id);
   const bd = Array.isArray(s.breakdown)? s.breakdown : (typeof s.breakdown==='string'? JSON.parse(s.breakdown) : []);
-  const target=s.amount_pengelola+s.amount_negara; const totPay=sum(pays,p=>p.amount);
   const isVid = s.jenis==='video';
+  const totalKph = s.total_kph!=null ? s.total_kph : ((s.amount_negara||0)+(s.pnbp||0)+(s.total_nilai_tiket||0));
+  const sisa = s.sisa!=null ? s.sisa : ((s.total_pendapatan||0)-totalKph);
+  const totPay=sum(pays,p=>p.amount);
   openModal({
     wide:true, title:'Detail Bagi Hasil', sub:s.periode_label,
     body:
       '<div class="grid g-2 mb">'
         +'<div class="card card-pad" style="box-shadow:none;border-color:var(--line)">'
           +'<div class="kpi-line"><span class="k-l">'+(isVid?'Total pendapatan video':'Total pendapatan tiket')+'</span><span class="k-v">'+rp(s.total_pendapatan)+'</span></div>'
-          +(isVid?'':'<div class="kpi-line"><span class="k-l">Total nilai tiket</span><span class="k-v">−'+rp(s.total_nilai_tiket)+'</span></div>')
+          +(isVid?'':'<div class="kpi-line"><span class="k-l">PNBP ('+(s.pct_pnbp!=null?s.pct_pnbp:0)+'%)</span><span class="k-v">−'+rp(s.pnbp||0)+'</span></div>')
+          +(isVid?'':'<div class="kpi-line"><span class="k-l">Nilai tiket</span><span class="k-v">−'+rp(s.total_nilai_tiket||0)+'</span></div>')
           +'<div class="kpi-line big"><span class="k-l">Dasar bagi hasil</span><span class="k-v">'+rp(s.net)+'</span></div>'
-          +'<div class="kpi-line"><span class="k-l">Pengelola ('+s.pct_pengelola+'%)</span><span class="k-v pos">'+rp(s.amount_pengelola)+'</span></div>'
-          +'<div class="kpi-line"><span class="k-l">Negara ('+s.pct_negara+'%)</span><span class="k-v" style="color:var(--gold)">'+rp(s.amount_negara)+'</span></div>'
+          +'<div class="kpi-line"><span class="k-l">Bagi hasil KPH ('+(s.pct_kph!=null?s.pct_kph:0)+'%)</span><span class="k-v">'+rp(s.share_kph||0)+'</span></div>'
+          +'<div class="kpi-line big" style="border-top:1px solid var(--line);margin-top:6px;padding-top:10px"><span class="k-l" style="color:var(--gold)">Total dikirim ke KPH</span><span class="k-v" style="color:var(--gold)">'+rp(totalKph)+'</span></div>'
+          +'<div class="kpi-line"><span class="k-l">Sisa untuk pengelola</span><span class="k-v pos">'+rp(sisa)+'</span></div>'
         +'</div>'
         +'<div class="card card-pad" style="box-shadow:none;border-color:var(--line)"><h4 style="margin:0 0 10px;font-size:14px">Rincian per kategori</h4>'
           + bd.map(b=>'<div class="kpi-line"><span class="k-l">'+esc(b.name)+(isVid?' <span class="muted small">('+(b.qty||0)+' video)</span>':' <span class="muted small">('+b.qty+' tiket × '+rp(b.nominal)+')</span>')+'</span><span class="k-v">'+rp(b.pendapatan)+'</span></div>').join('')
         +'</div>'
       +'</div>'
-      +'<div class="card" style="box-shadow:none;border-color:var(--line)"><div class="card-head"><h3>Bukti transfer</h3><span class="pill">Terbayar '+rp(totPay)+' / '+rp(target)+'</span></div>'
+      +'<div class="card" style="box-shadow:none;border-color:var(--line)"><div class="card-head"><h3>Bukti kirim ke KPH</h3><span class="pill">Terkirim '+rp(totPay)+' / '+rp(totalKph)+'</span></div>'
         +'<div id="pay-list" style="padding:6px 0"></div>'
         +'<div class="card-pad" style="border-top:1px solid var(--line-2)"><button class="btn btn-accent btn-sm" id="add-pay">'+icon('plus',16)+' Catat transfer + bukti</button></div>'
       +'</div>',
@@ -1246,9 +1256,9 @@ async function openSettlementDetail(s){
 }
 function drawPayList(s, pays){
   const el=$('#pay-list'); if(!el) return;
-  if(pays.length===0){ el.innerHTML='<div class="empty" style="padding:24px"><p>Belum ada bukti transfer.</p></div>'; return; }
-  el.innerHTML='<div class="table-wrap"><table class="tbl"><thead><tr><th>Tanggal</th><th>Penerima</th><th>Bukti</th><th>Catatan</th><th class="num">Nominal</th><th></th></tr></thead><tbody>'
-    + pays.map(p=>'<tr><td>'+fmtDate(p.tanggal)+'</td><td><span class="badge '+(p.recipient==='negara'?'badge-warn':'badge-pos')+'">'+(p.recipient==='negara'?'Negara':'Pengelola')+'</span></td>'
+  if(pays.length===0){ el.innerHTML='<div class="empty" style="padding:24px"><p>Belum ada bukti transfer ke KPH.</p></div>'; return; }
+  el.innerHTML='<div class="table-wrap"><table class="tbl"><thead><tr><th>Tanggal</th><th>Bukti</th><th>Catatan</th><th class="num">Nominal</th><th></th></tr></thead><tbody>'
+    + pays.map(p=>'<tr><td>'+fmtDate(p.tanggal)+'</td>'
       +'<td>'+(p.bukti?'<img class="proof-thumb" src="'+p.bukti+'" data-pp="'+p.id+'">':'<span class="muted small">—</span>')+'</td><td>'+esc(p.note||'—')+'</td><td class="num strong">'+rp(p.amount)+'</td>'
       +'<td class="num"><button class="iconbtn del" data-delpay="'+p.id+'">'+icon('trash',15)+'</button></td></tr>').join('')
     +'</tbody></table></div>';
@@ -1257,25 +1267,24 @@ function drawPayList(s, pays){
 }
 function openPaymentModal(s){
   let proofData=null;
+  const totalKph = s.total_kph!=null ? s.total_kph : ((s.amount_negara||0)+(s.pnbp||0)+(s.total_nilai_tiket||0));
   openModal({
-    title:'Catat Transfer Bagi Hasil', sub:s.periode_label,
+    title:'Catat Transfer ke KPH', sub:s.periode_label,
     body:'<div class="form-grid">'
-      +'<div class="field"><label class="label">Penerima <span class="req">*</span></label><select class="select" id="p-rcpt"><option value="negara">Negara ('+rp(s.amount_negara)+')</option><option value="pengelola">Pengelola ('+rp(s.amount_pengelola)+')</option></select></div>'
       +'<div class="field"><label class="label">Tanggal <span class="req">*</span></label><input class="input" type="date" id="p-tgl" value="'+todayStr()+'"></div>'
-      +'<div class="field full"><label class="label">Nominal (Rp) <span class="req">*</span></label><input class="input tnum" id="p-amt" inputmode="numeric" value="'+Math.round(s.amount_negara)+'"></div>'
-      +'<div class="field full"><label class="label">Catatan</label><input class="input" id="p-note" placeholder="mis. transfer BRI a.n. ..."></div>'
+      +'<div class="field"><label class="label">Nominal (Rp) <span class="req">*</span></label><input class="input tnum" id="p-amt" inputmode="numeric" value="'+Math.round(totalKph)+'"></div>'
+      +'<div class="field full"><label class="label">Catatan</label><input class="input" id="p-note" placeholder="mis. transfer BRI a.n. KPH ..."></div>'
       +'<div class="field full"><label class="label">Bukti transfer (foto/struk)</label><div class="uploader" id="p-up"><div class="up-label">'+icon('upload',20)+'<br>Ketuk untuk unggah bukti</div></div><input type="file" id="p-file" accept="image/*" style="display:none"></div>'
       +'</div>',
     okText:'Simpan',
     onOk: async ()=>{
       const amount=num($('#p-amt').value); if(amount<=0){ toast('Nominal harus diisi','err'); return false; }
-      await DB.insert('settlement_payments', { settlement_id:s.id, recipient:$('#p-rcpt').value, tanggal:$('#p-tgl').value, amount, note:$('#p-note').value.trim(), bukti:proofData, created_by:State.user.id });
+      await DB.insert('settlement_payments', { settlement_id:s.id, recipient:'kph', tanggal:$('#p-tgl').value, amount, note:$('#p-note').value.trim(), bukti:proofData, created_by:State.user.id });
       toast('Bukti transfer tersimpan','ok');
       const fresh=(await DB.all('settlement_payments')).filter(x=>x.settlement_id===s.id); drawPayList(s, fresh); return true;
     }
   });
   attachThousand('p-amt');
-  $('#p-rcpt').addEventListener('change', e=>{ $('#p-amt').value=new Intl.NumberFormat('id-ID').format(Math.round(e.target.value==='negara'?s.amount_negara:s.amount_pengelola)); });
   const up=$('#p-up'), file=$('#p-file'); up.addEventListener('click', ()=>file.click());
   file.addEventListener('change', async ()=>{ if(file.files[0]){ proofData=await fileToResizedDataURL(file.files[0]); up.classList.add('has'); up.innerHTML='<img src="'+proofData+'">'; } });
 }
@@ -1637,8 +1646,8 @@ async function pagePengaturan(c){
       +'</div></div>'
       // bagi hasil + saldo awal
       +'<div class="card"><div class="card-head"><h3>Bagi hasil & saldo awal</h3></div><div class="card-pad">'
-        +'<div class="form-grid"><div class="field"><label class="label">% Pengelola</label><input class="input tnum" id="st-pp" inputmode="decimal" value="'+s.pct_pengelola+'"></div>'
-        +'<div class="field"><label class="label">% Negara</label><input class="input tnum" id="st-pn" inputmode="decimal" value="'+s.pct_negara+'"></div></div>'
+        +'<div class="form-grid"><div class="field"><label class="label">PNBP (%)</label><input class="input tnum" id="st-pnbp" inputmode="decimal" value="'+(s.pct_pnbp!=null?s.pct_pnbp:2.5)+'"></div>'
+        +'<div class="field"><label class="label">Bagi hasil KPH (%)</label><input class="input tnum" id="st-kph" inputmode="decimal" value="'+(s.pct_kph!=null?s.pct_kph:30)+'"></div></div>'
         +'<div class="form-grid"><div class="field"><label class="label">Saldo awal Kas (Rp)</label><input class="input tnum" id="st-sk" inputmode="numeric" value="'+(s.saldo_awal_kas||0)+'"></div>'
         +'<div class="field"><label class="label">Saldo awal Rekening (Rp)</label><input class="input tnum" id="st-sr" inputmode="numeric" value="'+(s.saldo_awal_rekening||0)+'"></div></div>'
         +'<div class="hintline" style="margin-bottom:12px">Saldo awal = saldo sebelum sistem ini mulai dipakai.</div>'
@@ -1656,7 +1665,7 @@ async function pagePengaturan(c){
     +'</div></div></div>';
 
   $('#save-profil').addEventListener('click', async ()=>{ await DB.saveSettings({ nama_usaha:$('#st-nama').value.trim(), bank_nama:$('#st-bank').value.trim(), bank_rekening:$('#st-rek').value.trim(), bank_atasnama:$('#st-an').value.trim() }); toast('Profil disimpan','ok'); });
-  $('#save-bh').addEventListener('click', async ()=>{ await DB.saveSettings({ pct_pengelola:parseFloat($('#st-pp').value)||0, pct_negara:parseFloat($('#st-pn').value)||0, saldo_awal_kas:num($('#st-sk').value), saldo_awal_rekening:num($('#st-sr').value) }); toast('Pengaturan disimpan','ok'); });
+  $('#save-bh').addEventListener('click', async ()=>{ await DB.saveSettings({ pct_pnbp:parseFloat($('#st-pnbp').value)||0, pct_kph:parseFloat($('#st-kph').value)||0, saldo_awal_kas:num($('#st-sk').value), saldo_awal_rekening:num($('#st-sr').value) }); toast('Pengaturan disimpan','ok'); });
   await drawCatLists();
   $('#add-rcat').addEventListener('click', ()=>openRevCatModal(null));
   $('#add-ecat').addEventListener('click', ()=>openExpCatModal(null));
