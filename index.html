@@ -329,6 +329,7 @@ const TABLES = ['profiles','rev_categories','exp_categories','revenues','expense
 const LS_DB = 'ms_db_v1';
 const LS_SESSION = 'ms_session_v1';
 const LS_CONN = 'ms_conn_v1';
+const DEFAULT_CONN = { url:'https://iulsddqwckkssbhpdhwo.supabase.co', key:'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml1bHNkZHF3Y2trc3NiaHBkaHdvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI1NTU4OTMsImV4cCI6MjA5ODEzMTg5M30.559s7gfkQ1_bFUkURCdr0ZUDqjROLDd5Jo65jTsQipI' };
 const MONTHS = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
 const MONTHS_FULL = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
 
@@ -480,7 +481,7 @@ function loadScript(src){ return new Promise((res,rej)=>{ const s=document.creat
 /* ---------- penyimpanan lokal ---------- */
 function loadLocal(){ try{ return JSON.parse(localStorage.getItem(LS_DB)) || {}; }catch(e){ return {}; } }
 function saveLocal(db){ localStorage.setItem(LS_DB, JSON.stringify(db)); }
-function loadConn(){ try{ return JSON.parse(localStorage.getItem(LS_CONN)); }catch(e){ return null; } }
+function loadConn(){ try{ const v=JSON.parse(localStorage.getItem(LS_CONN)); if(v && v.url && v.key) return v; }catch(e){} return DEFAULT_CONN; }
 
 function DEFAULT_SETTINGS(){ return { id:'app', nama_usaha:'Mountain Slide', bank_nama:'', bank_rekening:'', bank_atasnama:'', pct_pengelola:12, pct_negara:18, pct_pnbp:2.5, pct_kph:30, saldo_awal_kas:0, saldo_awal_rekening:0 }; }
 
