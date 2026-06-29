@@ -452,9 +452,13 @@ const DB = {
     if(this.mode==='online'){ const { data, error } = await this.sb.from(table).select('*'); if(error) throw error; return data||[]; }
     return (loadLocal()[table]||[]).slice();
   },
-  async insert(table, row){
+  async insert(table, row, opts){
     row = Object.assign({}, row);
-    if(this.mode==='online'){ const { data, error } = await this.sb.from(table).insert(row).select().single(); if(error) throw error; return data; }
+    const wantRow = !opts || opts.returnRow !== false;
+    if(this.mode==='online'){
+      if(wantRow){ const { data, error } = await this.sb.from(table).insert(row).select().single(); if(error) throw error; return data; }
+      const { error } = await this.sb.from(table).insert(row); if(error) throw error; return null;
+    }
     const db=loadLocal(); if(!row.id) row.id=uid(); if(!row.created_at) row.created_at=new Date().toISOString(); (db[table]=db[table]||[]).push(row); saveLocal(db); return row;
   },
   async update(table, id, patch){
@@ -508,8 +512,8 @@ function ensureLocalSeed(){
     db.exp_categories=[
       { id:'ec_m', name:'Maintenance', sort:1 },
       { id:'ec_o', name:'Operasional', sort:2 },
-      { id:'ec_g', name:'Gaji', sort:3 },
-      { id:'ec_p', name:'Perbaikan', sort:4 },
+      { id:'ec_p', name:'Perbaikan', sort:3 },
+      { id:'ec_l', name:'Lain-lain', sort:4 },
     ]; changed=true;
   }
   if(!db.settings || db.settings.length===0){ db.settings=[DEFAULT_SETTINGS()]; changed=true; }
@@ -545,18 +549,19 @@ function isManagerUp(){ return State.user.role==='owner'||State.user.role==='man
    Rekening = saldo_awal + Σ pendapatan qris  + Σ setoran − Σ penggantian − Σ transfer bagi hasil keluar
    ============================================================ */
 async function computeBalances(){
-  const [revs, exps, muts, pays, settings] = await Promise.all([
-    DB.all('revenues'), DB.all('expenses'), DB.all('mutations'), DB.all('settlement_payments'), DB.getSettings()
+  const [revs, exps, muts, settings] = await Promise.all([
+    DB.all('revenues'), DB.all('expenses'), DB.all('mutations'), DB.getSettings()
   ]);
   const revTunai = sum(revs.filter(r=>r.metode==='tunai'), r=>r.amount);
   const revQris  = sum(revs.filter(r=>r.metode==='qris'), r=>r.amount);
-  const totExp   = sum(exps, e=>e.amount);
+  const expKas = sum(exps.filter(e=>(e.sumber||'kas')!=='rekening'), e=>e.amount);
+  const expRek = sum(exps.filter(e=>e.sumber==='rekening'), e=>e.amount);
+  const totExp = expKas + expRek;
   const setoran  = sum(muts.filter(m=>m.jenis==='setoran'), m=>m.amount);
   const ganti    = sum(muts.filter(m=>m.jenis==='penggantian'), m=>m.amount);
-  const transferOut = sum(pays, p=>p.amount);
-  const kas = (settings.saldo_awal_kas||0) + revTunai - totExp - setoran + ganti;
-  const rekening = (settings.saldo_awal_rekening||0) + revQris + setoran - ganti - transferOut;
-  return { kas, rekening, revTunai, revQris, totExp, setoran, ganti, transferOut };
+  const kas = (settings.saldo_awal_kas||0) + revTunai - expKas - setoran + ganti;
+  const rekening = (settings.saldo_awal_rekening||0) + revQris + setoran - ganti - expRek;
+  return { kas, rekening, revTunai, revQris, totExp, expKas, expRek, setoran, ganti };
 }
 
 /* ============================================================
@@ -931,7 +936,7 @@ function bindRevInput(cats){
     const entries=[]; document.querySelectorAll('.rev-qty').forEach(inp=>{ const q=num(inp.value); if(q>0){ const h=Number(inp.dataset.harga)||0; entries.push({ kategori_id:inp.dataset.cat, qty:q, amount:q*h, metode:inp.dataset.metode }); } });
     if(entries.length===0){ toast('Isi minimal satu jumlah','err'); return; }
     save.disabled=true; save.textContent='Menyimpan\u2026';
-    for(const e of entries){ await DB.insert('revenues', { tanggal:tgl, kategori_id:e.kategori_id, qty:e.qty, amount:e.amount, metode:e.metode, catatan:note, created_by:State.user.id, created_by_name:State.user.full_name||State.user.username }); }
+    for(const e of entries){ await DB.insert('revenues', { tanggal:tgl, kategori_id:e.kategori_id, qty:e.qty, amount:e.amount, metode:e.metode, catatan:note, created_by:State.user.id, created_by_name:State.user.full_name||State.user.username }, { returnRow:false }); }
     toast('Laporan pendapatan tersimpan ('+entries.length+' entri)','ok');
     $('#modal-root').innerHTML=''; renderPage('pendapatan');
   });
@@ -999,26 +1004,34 @@ function drawExpList(exps){
 }
 async function openExpenseModalQuick(){ const cats=await DB.all('exp_categories'); openExpenseModal(cats.sort((a,b)=>(a.sort||0)-(b.sort||0)), null); }
 function openExpenseModal(cats, row){
-  const isEdit=!!row;
-  const opts=cats.map(k=>'<option value="'+esc(k.name)+'" '+(row&&row.kategori===k.name?'selected':'')+'>'+esc(k.name)+'</option>').join('');
+  const isEdit=!!row; let proofData = row? (row.bukti||null) : null;
+  let opts=cats.map(k=>'<option value="'+esc(k.name)+'" '+(row&&row.kategori===k.name?'selected':'')+'>'+esc(k.name)+'</option>').join('');
+  if(row && row.kategori && !cats.some(k=>k.name===row.kategori)) opts = '<option value="'+esc(row.kategori)+'" selected>'+esc(row.kategori)+'</option>' + opts;
+  const src=row? (row.sumber||'kas') : 'kas';
   openModal({
-    title:isEdit?'Edit Pengeluaran':'Catat Pengeluaran', sub:'Pengeluaran diambil dari Kas (tunai)',
+    title:isEdit?'Edit Pengeluaran':'Catat Pengeluaran', sub:'Pilih dibayar dari Kas atau Rekening',
     body:'<div class="form-grid">'
       +'<div class="field"><label class="label">Kategori <span class="req">*</span></label><select class="select" id="e-kat">'+opts+'</select></div>'
       +'<div class="field"><label class="label">Tanggal <span class="req">*</span></label><input class="input" type="date" id="e-tgl" value="'+(row?row.tanggal:todayStr())+'"></div>'
+      +'<div class="field full"><label class="label">Dibayar dari <span class="req">*</span></label><div class="seg" id="e-src" style="flex-wrap:wrap"><button class="'+(src!=='rekening'?'on':'')+'" data-s="kas">Kas (tunai)</button><button class="'+(src==='rekening'?'on':'')+'" data-s="rekening">Rekening (bank)</button></div></div>'
       +'<div class="field full"><label class="label">Nominal (Rp) <span class="req">*</span></label><input class="input tnum" id="e-amt" inputmode="numeric" placeholder="0" value="'+(row?row.amount:'')+'"></div>'
-      +'<div class="field full"><label class="label">Deskripsi</label><input class="input" id="e-desc" placeholder="mis. servis pompa, gaji harian" value="'+esc(row?row.deskripsi||'':'')+'"></div>'
+      +'<div class="field full"><label class="label">Deskripsi</label><input class="input" id="e-desc" placeholder="mis. servis pompa, beli ATK" value="'+esc(row?row.deskripsi||'':'')+'"></div>'
+      +'<div class="field full"><label class="label">Bukti (foto/struk, opsional)</label><div class="uploader'+(proofData?' has':'')+'" id="e-up">'+(proofData?'<img src="'+proofData+'">':'<div class="up-label">'+icon('upload',20)+'<br>Ketuk untuk unggah</div>')+'</div><input type="file" id="e-file" accept="image/*" style="display:none"></div>'
       +'</div>',
     okText:isEdit?'Simpan Perubahan':'Simpan',
     onOk: async ()=>{
       const amount=num($('#e-amt').value); if(amount<=0){ toast('Nominal harus diisi','err'); return false; }
-      const data={ tanggal:$('#e-tgl').value, kategori:$('#e-kat').value, amount, deskripsi:$('#e-desc').value.trim() };
+      const sumber=document.querySelector('#e-src button.on').dataset.s;
+      const data={ tanggal:$('#e-tgl').value, kategori:$('#e-kat').value, amount, sumber, deskripsi:$('#e-desc').value.trim(), bukti:proofData };
       if(isEdit){ await DB.update('expenses', row.id, data); toast('Pengeluaran diperbarui','ok'); }
       else { data.created_by=State.user.id; data.created_by_name=State.user.full_name||State.user.username; await DB.insert('expenses', data); toast('Pengeluaran tersimpan','ok'); }
       renderPage(State.page); return true;
     }
   });
   attachThousand('e-amt');
+  document.querySelectorAll('#e-src button').forEach(b=> b.addEventListener('click', ()=>{ document.querySelectorAll('#e-src button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); }));
+  const up=$('#e-up'), file=$('#e-file'); up.addEventListener('click', ()=>file.click());
+  file.addEventListener('change', async ()=>{ if(file.files[0]){ proofData=await fileToResizedDataURL(file.files[0]); up.classList.add('has'); up.innerHTML='<img src="'+proofData+'">'; } });
 }
 
 /* ============================================================
@@ -1109,16 +1122,16 @@ function drawSettlements(list){
         +'<td><span class="badge badge-grey" id="paybadge-'+s.id+'">memuat…</span></td>'
         +'<td class="num"><div class="t-actions"><button class="iconbtn" data-view-bh="'+s.id+'">'+icon('receipt',15)+'</button><button class="iconbtn del" data-del-bh="'+s.id+'">'+icon('trash',15)+'</button></div></td></tr>';
     }).join('')+'</tbody></table></div>';
-  // status kirim ke KPH async
-  DB.all('settlement_payments').then(pays=>{
-    list.forEach(s=>{ const el=$('#paybadge-'+s.id); if(!el) return; const ps=pays.filter(p=>p.settlement_id===s.id); const totPay=sum(ps,p=>p.amount); const target=kphOf(s);
+  // status kirim ke KPH async (dari pengeluaran terkait)
+  DB.all('expenses').then(exps=>{
+    list.forEach(s=>{ const el=$('#paybadge-'+s.id); if(!el) return; const ps=exps.filter(e=>e.settlement_id===s.id); const totPay=sum(ps,e=>e.amount); const target=kphOf(s);
       if(ps.length===0){ el.className='badge badge-warn'; el.textContent='Belum dikirim'; }
       else if(totPay>=target-1){ el.className='badge badge-pos'; el.textContent='Lunas'; }
       else { el.className='badge badge-qris'; el.textContent='Sebagian'; }
     });
   });
   document.querySelectorAll('[data-view-bh]').forEach(b=> b.addEventListener('click', async ()=>{ const s=(await DB.all('settlements')).find(x=>x.id===b.dataset.viewBh); openSettlementDetail(s); }));
-  document.querySelectorAll('[data-del-bh]').forEach(b=> b.addEventListener('click', ()=> confirmDelete('Hapus catatan bagi hasil ini? Bukti transfer terkait juga dihapus.', async ()=>{ const id=b.dataset.delBh; const pays=await DB.all('settlement_payments'); for(const p of pays.filter(x=>x.settlement_id===id)) await DB.remove('settlement_payments', p.id); await DB.remove('settlements', id); toast('Bagi hasil dihapus','ok'); renderPage('bagihasil'); })));
+  document.querySelectorAll('[data-del-bh]').forEach(b=> b.addEventListener('click', ()=> confirmDelete('Hapus catatan bagi hasil ini? Pengeluaran transfer yang terkait juga ikut dihapus.', async ()=>{ const id=b.dataset.delBh; const exps=await DB.all('expenses'); for(const e of exps.filter(x=>x.settlement_id===id)) await DB.remove('expenses', e.id); await DB.remove('settlements', id); toast('Bagi hasil dihapus','ok'); renderPage('bagihasil'); })));
 }
 
 async function openBagiHasilCalc(settings){
@@ -1250,12 +1263,12 @@ function renderVideoBhTable(data, settings){
 }
 
 async function openSettlementDetail(s){
-  const pays=(await DB.all('settlement_payments')).filter(p=>p.settlement_id===s.id);
+  const pays=(await DB.all('expenses')).filter(e=>e.settlement_id===s.id);
   const bd = Array.isArray(s.breakdown)? s.breakdown : (typeof s.breakdown==='string'? JSON.parse(s.breakdown) : []);
   const isVid = s.jenis==='video';
   const totalKph = s.total_kph!=null ? s.total_kph : ((s.amount_negara||0)+(s.pnbp||0)+(s.total_nilai_tiket||0));
   const sisa = s.sisa!=null ? s.sisa : ((s.total_pendapatan||0)-totalKph);
-  const totPay=sum(pays,p=>p.amount);
+  const totPay=sum(pays,e=>e.amount);
   openModal({
     wide:true, title:'Detail Bagi Hasil', sub:s.periode_label,
     body:
@@ -1273,7 +1286,7 @@ async function openSettlementDetail(s){
           + bd.map(b=>'<div class="kpi-line"><span class="k-l">'+esc(b.name)+(isVid?' <span class="muted small">('+(b.qty||0)+' video)</span>':' <span class="muted small">('+b.qty+' tiket × '+rp(b.nominal)+')</span>')+'</span><span class="k-v">'+rp(b.pendapatan)+'</span></div>').join('')
         +'</div>'
       +'</div>'
-      +'<div class="card" style="box-shadow:none;border-color:var(--line)"><div class="card-head"><h3>Bukti kirim ke KPH</h3><span class="pill">Terkirim '+rp(totPay)+' / '+rp(totalKph)+'</span></div>'
+      +'<div class="card" style="box-shadow:none;border-color:var(--line)"><div class="card-head"><h3>Transfer ke KPH (tercatat di Pengeluaran)</h3><span class="pill">Terkirim '+rp(totPay)+' / '+rp(totalKph)+'</span></div>'
         +'<div id="pay-list" style="padding:6px 0"></div>'
         +'<div class="card-pad" style="border-top:1px solid var(--line-2)"><button class="btn btn-accent btn-sm" id="add-pay">'+icon('plus',16)+' Catat transfer + bukti</button></div>'
       +'</div>',
@@ -1284,14 +1297,14 @@ async function openSettlementDetail(s){
 }
 function drawPayList(s, pays){
   const el=$('#pay-list'); if(!el) return;
-  if(pays.length===0){ el.innerHTML='<div class="empty" style="padding:24px"><p>Belum ada bukti transfer ke KPH.</p></div>'; return; }
-  el.innerHTML='<div class="table-wrap"><table class="tbl"><thead><tr><th>Tanggal</th><th>Bukti</th><th>Catatan</th><th class="num">Nominal</th><th></th></tr></thead><tbody>'
-    + pays.map(p=>'<tr><td>'+fmtDate(p.tanggal)+'</td>'
-      +'<td>'+(p.bukti?'<img class="proof-thumb" src="'+p.bukti+'" data-pp="'+p.id+'">':'<span class="muted small">—</span>')+'</td><td>'+esc(p.note||'—')+'</td><td class="num strong">'+rp(p.amount)+'</td>'
+  if(pays.length===0){ el.innerHTML='<div class="empty" style="padding:24px"><p>Belum ada transfer ke KPH. Catat di sini, otomatis masuk ke Pengeluaran.</p></div>'; return; }
+  el.innerHTML='<div class="table-wrap"><table class="tbl"><thead><tr><th>Tanggal</th><th>Sumber</th><th>Bukti</th><th>Catatan</th><th class="num">Nominal</th><th></th></tr></thead><tbody>'
+    + pays.map(p=>'<tr><td>'+fmtDate(p.tanggal)+'</td><td><span class="badge '+(p.sumber==='rekening'?'badge-qris':'badge-pos')+'">'+(p.sumber==='rekening'?'Rekening':'Kas')+'</span></td>'
+      +'<td>'+(p.bukti?'<img class="proof-thumb" src="'+p.bukti+'" data-pp="'+p.id+'">':'<span class="muted small">—</span>')+'</td><td>'+esc(p.deskripsi||'—')+'</td><td class="num strong">'+rp(p.amount)+'</td>'
       +'<td class="num"><button class="iconbtn del" data-delpay="'+p.id+'">'+icon('trash',15)+'</button></td></tr>').join('')
     +'</tbody></table></div>';
   el.querySelectorAll('[data-pp]').forEach(img=> img.addEventListener('click', ()=>openImage(img.src)));
-  el.querySelectorAll('[data-delpay]').forEach(b=> b.addEventListener('click', async ()=>{ await DB.remove('settlement_payments', b.dataset.delpay); toast('Bukti dihapus','ok'); const fresh=(await DB.all('settlement_payments')).filter(x=>x.settlement_id===s.id); drawPayList(s, fresh); }));
+  el.querySelectorAll('[data-delpay]').forEach(b=> b.addEventListener('click', async ()=>{ await DB.remove('expenses', b.dataset.delpay); toast('Transfer dihapus','ok'); const fresh=(await DB.all('expenses')).filter(x=>x.settlement_id===s.id); drawPayList(s, fresh); }));
 }
 function openPaymentModal(s){
   let proofData=null;
@@ -1301,18 +1314,22 @@ function openPaymentModal(s){
     body:'<div class="form-grid">'
       +'<div class="field"><label class="label">Tanggal <span class="req">*</span></label><input class="input" type="date" id="p-tgl" value="'+todayStr()+'"></div>'
       +'<div class="field"><label class="label">Nominal (Rp) <span class="req">*</span></label><input class="input tnum" id="p-amt" inputmode="numeric" value="'+Math.round(totalKph)+'"></div>'
+      +'<div class="field full"><label class="label">Dibayar dari <span class="req">*</span></label><div class="seg" id="p-src" style="flex-wrap:wrap"><button class="on" data-s="rekening">Rekening (bank)</button><button data-s="kas">Kas (tunai)</button></div></div>'
       +'<div class="field full"><label class="label">Catatan</label><input class="input" id="p-note" placeholder="mis. transfer BRI a.n. KPH ..."></div>'
       +'<div class="field full"><label class="label">Bukti transfer (foto/struk)</label><div class="uploader" id="p-up"><div class="up-label">'+icon('upload',20)+'<br>Ketuk untuk unggah bukti</div></div><input type="file" id="p-file" accept="image/*" style="display:none"></div>'
       +'</div>',
     okText:'Simpan',
     onOk: async ()=>{
       const amount=num($('#p-amt').value); if(amount<=0){ toast('Nominal harus diisi','err'); return false; }
-      await DB.insert('settlement_payments', { settlement_id:s.id, recipient:'kph', tanggal:$('#p-tgl').value, amount, note:$('#p-note').value.trim(), bukti:proofData, created_by:State.user.id });
-      toast('Bukti transfer tersimpan','ok');
-      const fresh=(await DB.all('settlement_payments')).filter(x=>x.settlement_id===s.id); drawPayList(s, fresh); return true;
+      const sumber=document.querySelector('#p-src button.on').dataset.s;
+      const note=$('#p-note').value.trim();
+      await DB.insert('expenses', { tanggal:$('#p-tgl').value, kategori:'Bagi Hasil KPH', amount, sumber, settlement_id:s.id, deskripsi:note||('Bagi hasil '+s.periode_label), bukti:proofData, created_by:State.user.id, created_by_name:State.user.full_name||State.user.username });
+      toast('Transfer dicatat & masuk Pengeluaran','ok');
+      const fresh=(await DB.all('expenses')).filter(x=>x.settlement_id===s.id); drawPayList(s, fresh); return true;
     }
   });
   attachThousand('p-amt');
+  document.querySelectorAll('#p-src button').forEach(b=> b.addEventListener('click', ()=>{ document.querySelectorAll('#p-src button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); }));
   const up=$('#p-up'), file=$('#p-file'); up.addEventListener('click', ()=>file.click());
   file.addEventListener('change', async ()=>{ if(file.files[0]){ proofData=await fileToResizedDataURL(file.files[0]); up.classList.add('has'); up.innerHTML='<img src="'+proofData+'">'; } });
 }
@@ -1518,7 +1535,7 @@ function drawPayrolls(list){
       +'<td class="num"><div class="t-actions"><button class="iconbtn" data-view-pay="'+p.id+'">'+icon('receipt',15)+'</button><button class="iconbtn del" data-del-pay="'+p.id+'">'+icon('trash',15)+'</button></div></td></tr>';
     }).join('')+'</tbody></table></div>';
   document.querySelectorAll('[data-view-pay]').forEach(b=> b.addEventListener('click', async ()=>{ openPayrollDetail((await DB.all('payrolls')).find(p=>p.id===b.dataset.viewPay)); }));
-  document.querySelectorAll('[data-del-pay]').forEach(b=> b.addEventListener('click', ()=> confirmDelete('Hapus perhitungan gaji ini?', async ()=>{ await DB.remove('payrolls', b.dataset.delPay); toast('Perhitungan dihapus','ok'); renderPage('gaji'); })));
+  document.querySelectorAll('[data-del-pay]').forEach(b=> b.addEventListener('click', ()=> confirmDelete('Hapus perhitungan gaji ini? Pengeluaran gaji yang terkait juga ikut dihapus.', async ()=>{ const id=b.dataset.delPay; const exps=await DB.all('expenses'); for(const e of exps.filter(x=>x.payroll_id===id)) await DB.remove('expenses', e.id); await DB.remove('payrolls', id); toast('Perhitungan & pengeluaran gaji dihapus','ok'); renderPage('gaji'); })));
 }
 async function openGajiCalc(){
   const now=new Date();
@@ -1530,13 +1547,20 @@ async function openGajiCalc(){
       +'<div class="field"><label class="label">Bulan gajian</label><select class="select" id="g-month">'+monthOpts+'</select></div>'
       +'<div class="field"><label class="label">Tahun</label><select class="select" id="g-year">'+yearOpts+'</select></div>'
       +'<div class="field"><label class="label">Periode</label><div class="seg" id="g-mode" style="flex-wrap:wrap"><button class="on" data-md="28">Siklus 28</button><button data-md="full">Bulan penuh</button></div></div>'
+      +'<div class="field"><label class="label">Dibayar dari</label><div class="seg" id="g-src" style="flex-wrap:wrap"><button class="on" data-s="rekening">Rekening</button><button data-s="kas">Kas</button></div></div>'
       +'<button class="btn btn-primary btn-sm" id="g-load">Tarik data</button>'
     +'</div><div id="g-calc"></div>',
-    okText:'Simpan Perhitungan', okDisabled:true,
-    onOk: async ()=>{ const snap=window.__gajiSnap; if(!snap){ toast('Tarik data dulu','err'); return false; } await DB.insert('payrolls', snap); toast('Perhitungan gaji tersimpan','ok'); renderPage('gaji'); return true; }
+    okText:'Simpan & Catat Pengeluaran', okDisabled:true,
+    onOk: async ()=>{ const snap=window.__gajiSnap; if(!snap){ toast('Tarik data dulu','err'); return false; }
+      const sumber=document.querySelector('#g-src button.on').dataset.s;
+      const saved=await DB.insert('payrolls', snap); const pid=saved&&saved.id?saved.id:null;
+      const ep=String(snap.end).split('-'); const payDate=ep[0]+'-'+ep[1]+'-28';
+      await DB.insert('expenses', { tanggal:payDate, kategori:'Gaji', amount:snap.total, sumber, payroll_id:pid, deskripsi:'Gaji '+snap.periode_label, created_by:State.user.id, created_by_name:State.user.full_name||State.user.username });
+      toast('Gaji disimpan & masuk Pengeluaran','ok'); renderPage('gaji'); return true; }
   });
   let mode='28';
   document.querySelectorAll('#g-mode button').forEach(b=> b.addEventListener('click', ()=>{ document.querySelectorAll('#g-mode button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); mode=b.dataset.md; }));
+  document.querySelectorAll('#g-src button').forEach(b=> b.addEventListener('click', ()=>{ document.querySelectorAll('#g-src button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); }));
   $('#g-load').addEventListener('click', async ()=>{
     const y=Number($('#g-year').value), m=Number($('#g-month').value); let rng;
     if(mode==='full'){ const r=monthRange(y,m); rng={start:r.start, end:r.end, label:'Bulan '+MONTHS[m]+' '+y}; }
@@ -1574,14 +1598,9 @@ function openPayrollDetail(p){
       + bd.map(b=>'<tr><td><b>'+esc(b.nama)+'</b></td><td class="muted small">'+esc(b.jabatan||'')+'</td><td class="num">'+fmtDays(Number(b.hari_kerja)||0)+'</td><td class="num">'+rp(b.rate)+'</td><td class="num strong">'+rp(b.total)+'</td></tr>').join('')
       +'<tr><td colspan="4" class="num strong">Total</td><td class="num strong pos">'+rp(p.total)+'</td></tr>'
       +'</tbody></table></div>'
-      +'<div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap"><button class="btn btn-ghost btn-sm" id="pay-csv">'+icon('download',15)+' Ekspor CSV</button><button class="btn btn-subtle btn-sm" id="pay-toexp">'+icon('plus',15)+' Catat sebagai pengeluaran (Gaji)</button></div>',
+      +'<div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center"><button class="btn btn-ghost btn-sm" id="pay-csv">'+icon('download',15)+' Ekspor CSV</button><span class="muted small">'+icon('check',14)+' Sudah otomatis tercatat sebagai Pengeluaran (Gaji) saat disimpan.</span></div>',
     okText:'Tutup', hideCancel:true, onOk: async ()=> true });
   $('#pay-csv').addEventListener('click', ()=>{ const rows=[['Periode',p.periode_label],[p.start,'s/d',p.end],[],['Karyawan','Jabatan','Hari kerja','Upah/hari','Total']]; bd.forEach(b=> rows.push([b.nama,b.jabatan||'',b.hari_kerja,b.rate,b.total])); rows.push(['','','','TOTAL',p.total]); downloadCSV('gaji_'+p.start+'.csv', rows); });
-  $('#pay-toexp').addEventListener('click', ()=> confirmDelete('Buat 1 entri Pengeluaran kategori "Gaji" sebesar '+rp(p.total)+' untuk periode ini? (mengurangi saldo Kas)', async ()=>{
-    const endParts=String(p.end).split('-'); const payDate=endParts[0]+'-'+endParts[1]+'-28';
-    await DB.insert('expenses', { tanggal:payDate, kategori:'Gaji', amount:p.total, deskripsi:'Gaji karyawan '+p.periode_label, created_by:State.user.id, created_by_name:State.user.full_name||State.user.username });
-    toast('Pengeluaran gaji dicatat','ok');
-  }, 'Buat pengeluaran'));
 }
 
 /* ============================================================
