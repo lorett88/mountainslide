@@ -536,7 +536,7 @@ const NAV = [
   { key:'karyawan',   label:'Karyawan',         icon:'user',      roles:['owner','manager'] },
   { key:'absensi',    label:'Absensi',          icon:'calendar',  roles:['owner','spv'] },
   { key:'gaji',       label:'Gaji',             icon:'receipt',   roles:['owner','manager'] },
-  { key:'aset',       label:'Aset',             icon:'asset',     roles:['owner','spv'] },
+  { key:'aset',       label:'Aset',             icon:'asset',     roles:['owner','manager','spv'] },
   { key:'laporan',    label:'Laporan',          icon:'report',    roles:['owner'] },
   { key:'pengaturan', label:'Pengaturan',       icon:'settings',  roles:['owner'] },
 ];
@@ -1370,12 +1370,16 @@ function drawAsetList(assets){
         +'<td class="num"><div class="t-actions"><button class="iconbtn" data-edit-aset="'+a.id+'">'+icon('edit',15)+'</button><button class="iconbtn del" data-del-aset="'+a.id+'">'+icon('trash',15)+'</button></div></td></tr>';
     }).join('')+'</tbody></table></div>';
   document.querySelectorAll('[data-edit-aset]').forEach(b=> b.addEventListener('click', async ()=>{ openAsetModal(assets.find(a=>a.id===b.dataset.editAset)); }));
-  document.querySelectorAll('[data-del-aset]').forEach(b=> b.addEventListener('click', ()=> confirmDelete('Hapus aset ini?', async ()=>{ await DB.remove('assets', b.dataset.delAset); toast('Aset dihapus','ok'); renderPage('aset'); })));
+  document.querySelectorAll('[data-del-aset]').forEach(b=> b.addEventListener('click', ()=> confirmDelete('Hapus aset ini? Pengeluaran pembelian terkait (jika ada) juga ikut dihapus.', async ()=>{ const id=b.dataset.delAset; const exps=await DB.all('expenses'); for(const e of exps.filter(x=>x.asset_id===id)) await DB.remove('expenses', e.id); await DB.remove('assets', id); toast('Aset dihapus','ok'); renderPage('aset'); })));
 }
 function openAsetModal(row){
   const isEdit=!!row; const conds=['Baik','Perlu Servis','Rusak'];
+  const isSpv = State.user.role==='spv';
+  const note = isSpv
+    ? '<div class="hintline">Pencatatan inventaris lapangan — <b>tidak mengurangi saldo</b>.</div>'
+    : '<div class="hintline">Pembelian baru otomatis tercatat sebagai pengeluaran dari <b>Rekening</b> sebesar total nilai. Isi nilai 0 untuk pencatatan saja.</div>';
   openModal({
-    title:isEdit?'Edit Aset':'Tambah Aset', sub:'Catat inventaris usaha',
+    title:isEdit?'Edit Aset':'Tambah Aset', sub:isSpv?'Pencatatan inventaris':'Pembelian / inventaris aset',
     body:'<div class="form-grid">'
       +'<div class="field full"><label class="label">Nama aset <span class="req">*</span></label><input class="input" id="a-nama" placeholder="mis. Pompa air, Ban seluncur" value="'+esc(row?row.nama:'')+'"></div>'
       +'<div class="field"><label class="label">Kategori</label><input class="input" id="a-kat" placeholder="mis. Mesin, Wahana" value="'+esc(row?row.kategori||'':'')+'"></div>'
@@ -1385,13 +1389,25 @@ function openAsetModal(row){
       +'<div class="field"><label class="label">Tanggal beli</label><input class="input" type="date" id="a-tgl" value="'+(row?row.tanggal_beli||'':'')+'"></div>'
       +'<div class="field"><label class="label">Kondisi</label><select class="select" id="a-kondisi">'+conds.map(k=>'<option '+(row&&row.kondisi===k?'selected':'')+'>'+k+'</option>').join('')+'</select></div>'
       +'<div class="field full"><label class="label">Catatan</label><input class="input" id="a-note" placeholder="opsional" value="'+esc(row?row.catatan||'':'')+'"></div>'
+      +'<div class="field full">'+note+'</div>'
       +'</div>',
     okText:isEdit?'Simpan Perubahan':'Simpan',
     onOk: async ()=>{
       const nama=$('#a-nama').value.trim(); if(!nama){ toast('Nama aset harus diisi','err'); return false; }
-      const data={ nama, kategori:$('#a-kat').value.trim(), lokasi:$('#a-lok').value.trim(), jumlah:num($('#a-jml').value)||1, nilai:num($('#a-nilai').value), tanggal_beli:$('#a-tgl').value, kondisi:$('#a-kondisi').value, catatan:$('#a-note').value.trim() };
-      if(isEdit){ await DB.update('assets', row.id, data); toast('Aset diperbarui','ok'); }
-      else { data.created_by=State.user.id; await DB.insert('assets', data); toast('Aset tersimpan','ok'); }
+      const jml=num($('#a-jml').value)||1, nilai=num($('#a-nilai').value); const total=nilai*jml;
+      const data={ nama, kategori:$('#a-kat').value.trim(), lokasi:$('#a-lok').value.trim(), jumlah:jml, nilai, tanggal_beli:$('#a-tgl').value, kondisi:$('#a-kondisi').value, catatan:$('#a-note').value.trim() };
+      if(isEdit){
+        await DB.update('assets', row.id, data);
+        // perbarui pengeluaran terkait bila ada
+        const linked=(await DB.all('expenses')).find(e=>e.asset_id===row.id);
+        if(linked) await DB.update('expenses', linked.id, { amount:total, tanggal:data.tanggal_beli||linked.tanggal, deskripsi:'Pembelian aset: '+nama });
+        toast('Aset diperbarui','ok');
+      } else {
+        data.created_by=State.user.id; const saved=await DB.insert('assets', data); const aid=saved&&saved.id?saved.id:null;
+        // manager/owner: pembelian -> pengeluaran rekening
+        if(!isSpv && total>0){ await DB.insert('expenses', { tanggal:data.tanggal_beli||todayStr(), kategori:'Pembelian Aset', amount:total, sumber:'rekening', asset_id:aid, deskripsi:'Pembelian aset: '+nama, created_by:State.user.id, created_by_name:State.user.full_name||State.user.username }); toast('Aset tersimpan & pengeluaran dicatat','ok'); }
+        else toast('Aset tersimpan','ok');
+      }
       renderPage('aset'); return true;
     }
   });
