@@ -506,6 +506,7 @@ function ensureLocalSeed(){
       { id:'rc_ter', name:'Tiket Terusan', type:'tiket', sharing:true, nominal:0, harga:0, sort:3 },
       { id:'rc_hb', name:'Tiket Hari Besar', type:'tiket', sharing:true, nominal:0, harga:0, sort:4 },
       { id:'rc_vid', name:'Video', type:'video', sharing:true, nominal:0, harga:0, sort:5 },
+      { id:'rc_lain', name:'Pendapatan Lain-lain', type:'lain', sharing:false, nominal:0, harga:0, sort:6 },
     ]; changed=true;
   }
   if(!db.exp_categories || db.exp_categories.length===0){
@@ -710,16 +711,23 @@ async function pageDashboard(c){
 
   if(State.user.role==='spv'){
     const tStart=todayStr();
-    const todayExp=exps.filter(e=>e.tanggal===tStart);
-    const yr=String(new Date().getFullYear()); const yearExp=exps.filter(e=>String(e.tanggal).slice(0,4)===yr);
-    c.innerHTML = pageHead('Halo, '+(State.user.full_name||State.user.username).split(' ')[0]+' 👋','Catat pengeluaran operasional. '+fmtDate(tStart),
+    const isKas=e=>(e.sumber||'kas')!=='rekening';
+    const kasExps=exps.filter(isKas);
+    const mKas=mExps.filter(isKas);
+    const todayExp=kasExps.filter(e=>e.tanggal===tStart);
+    const yr=String(new Date().getFullYear()); const yearExp=kasExps.filter(e=>String(e.tanggal).slice(0,4)===yr);
+    const bal=await computeBalances();
+    c.innerHTML = pageHead('Halo, '+(State.user.full_name||State.user.username).split(' ')[0]+' 👋','Catat pengeluaran operasional (dari Kas). '+fmtDate(tStart),
         '<button class="btn btn-ghost" data-goto="absensi">'+icon('calendar',16)+' Input Absensi</button><button class="btn btn-accent" id="quick-exp">'+icon('plus',18)+' Catat Pengeluaran</button>')
-      +'<div class="grid g-3 mb-lg">'
-        + stat('Pengeluaran bulan ini','ic-neg','expense', rp(totExp), mExps.length+' transaksi')
-        + stat('Pengeluaran hari ini','ic-sun','receipt', rp(sum(todayExp,e=>e.amount)), todayExp.length+' transaksi')
-        + stat('Pengeluaran tahun '+yr,'ic-gold','report', rp(sum(yearExp,e=>e.amount)), yearExp.length+' transaksi')
+      +'<div class="flowbar mb-lg" style="justify-content:flex-start">'
+        +'<div><div class="acc-label">'+icon('cash',15)+' Saldo Kas (tunai)</div><div class="acc-val">'+rp(bal.kas)+'</div><div class="acc-foot">Uang fisik di tangan untuk operasional</div></div>'
       +'</div>'
-      +'<div class="card"><div class="card-head"><h3>Pengeluaran terbaru bulan ini</h3><button class="btn btn-sm btn-subtle" data-goto="pengeluaran">Lihat semua</button></div>'+ expMiniTable(mExps) +'</div>';
+      +'<div class="grid g-3 mb-lg">'
+        + stat('Pengeluaran kas bulan ini','ic-neg','expense', rp(sum(mKas,e=>e.amount)), mKas.length+' transaksi')
+        + stat('Pengeluaran kas hari ini','ic-sun','receipt', rp(sum(todayExp,e=>e.amount)), todayExp.length+' transaksi')
+        + stat('Pengeluaran kas tahun '+yr,'ic-gold','report', rp(sum(yearExp,e=>e.amount)), yearExp.length+' transaksi')
+      +'</div>'
+      +'<div class="card"><div class="card-head"><h3>Pengeluaran kas terbaru bulan ini</h3><button class="btn btn-sm btn-subtle" data-goto="pengeluaran">Lihat semua</button></div>'+ expMiniTable(mKas) +'</div>';
     const qe=$('#quick-exp'); if(qe) qe.addEventListener('click', openExpenseModalQuick);
     c.querySelectorAll('[data-goto]').forEach(b=> b.addEventListener('click', ()=>{ State.page=b.dataset.goto; renderApp(); }));
     return;
@@ -900,7 +908,7 @@ function openRevenueModal(cats, row){
 
 /* form input pendapatan: 1 box jumlah per kategori, harga dari manager */
 function revInputCard(cats){
-  const tiket=cats.filter(c=>c.type==='tiket'), video=cats.filter(c=>c.type==='video');
+  const tiket=cats.filter(c=>c.type==='tiket'), video=cats.filter(c=>c.type==='video'), lain=cats.filter(c=>c.type==='lain');
   const rowHtml = c => '<div style="padding:12px 0;border-bottom:1px solid var(--line-2)">'
     +'<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:8px"><b>'+esc(c.name)+'</b><span class="muted small">Harga '+rp(c.harga||0)+(c.harga? '' : ' — belum diset manajer')+'</span></div>'
     +'<div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">'
@@ -908,16 +916,25 @@ function revInputCard(cats){
       +'<div class="field" style="margin:0"><label class="label" style="font-size:11px;color:var(--sunset)">QRIS → Rekening</label><input class="input tnum rev-qty" data-cat="'+c.id+'" data-metode="qris" data-harga="'+(c.harga||0)+'" inputmode="numeric" placeholder="0 qty" style="width:96px;text-align:right"></div>'
       +'<div style="margin-left:auto;text-align:right"><div class="muted small">Subtotal</div><div class="rev-sub" data-cat="'+c.id+'" style="font-weight:700">Rp 0</div></div>'
     +'</div></div>';
+  const lainHtml = c => '<div style="padding:12px 0;border-bottom:1px solid var(--line-2)">'
+    +'<div style="margin-bottom:8px"><b>'+esc(c.name)+'</b> <span class="muted small">isi nominal langsung</span></div>'
+    +'<div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">'
+      +'<div class="field" style="margin:0"><label class="label" style="font-size:11px;color:var(--pine)">Tunai → Kas (Rp)</label><input class="input tnum rev-amt" data-cat="'+c.id+'" data-metode="tunai" inputmode="numeric" placeholder="0" style="width:140px;text-align:right"></div>'
+      +'<div class="field" style="margin:0"><label class="label" style="font-size:11px;color:var(--sunset)">QRIS → Rekening (Rp)</label><input class="input tnum rev-amt" data-cat="'+c.id+'" data-metode="qris" inputmode="numeric" placeholder="0" style="width:140px;text-align:right"></div>'
+    +'</div>'
+    +'<div class="field" style="margin:8px 0 0"><label class="label" style="font-size:11px">Keterangan</label><input class="input rev-ket" data-cat="'+c.id+'" placeholder="mis. sewa loker, parkir, sewa ban"></div>'
+  +'</div>';
   return '<div class="card"><div class="card-pad">'
     +'<div class="field" style="margin-bottom:14px;max-width:240px"><label class="label">Tanggal</label><input class="input" type="date" id="ri-tgl" value="'+todayStr()+'"></div>'
     +'<div class="muted small" style="margin-bottom:10px">Isi jumlah terjual per metode. Boleh isi Tunai saja, QRIS saja, atau keduanya sekaligus.</div>'
     +'<div style="font-weight:700;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px">Tiket</div>'
     + (tiket.length? tiket.map(rowHtml).join('') : '<div class="muted small" style="padding:10px 0">Belum ada kategori tiket.</div>')
     + (video.length? '<div style="font-weight:700;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em;margin:16px 0 2px">Video</div>'+video.map(rowHtml).join('') : '')
+    + (lain.length? '<div style="font-weight:700;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em;margin:16px 0 2px">Pendapatan Lain-lain</div>'+lain.map(lainHtml).join('') : '')
     +'<div class="kpi-line" style="margin-top:14px"><span class="k-l">Total Tunai → Kas</span><span class="k-v pos" id="ri-tot-tunai">Rp 0</span></div>'
     +'<div class="kpi-line"><span class="k-l">Total QRIS → Rekening</span><span class="k-v" style="color:var(--sunset)" id="ri-tot-qris">Rp 0</span></div>'
     +'<div class="kpi-line big"><span class="k-l">Total keseluruhan</span><span class="k-v" id="ri-total">Rp 0</span></div>'
-    +'<div class="field" style="margin-top:12px"><label class="label">Catatan</label><input class="input" id="ri-note" placeholder="opsional (mis. shift pagi)"></div>'
+    +'<div class="field" style="margin-top:12px"><label class="label">Catatan umum</label><input class="input" id="ri-note" placeholder="opsional (mis. shift pagi)"></div>'
     +'<button class="btn btn-accent btn-block" id="ri-save" style="margin-top:10px">'+icon('check',18)+' Simpan Laporan Pendapatan</button>'
   +'</div></div>';
 }
@@ -925,18 +942,21 @@ function bindRevInput(cats){
   const recalc=()=>{
     let totT=0, totQ=0; const subByCat={};
     document.querySelectorAll('.rev-qty').forEach(inp=>{ const q=num(inp.value); const h=Number(inp.dataset.harga)||0; const amt=q*h; if(inp.dataset.metode==='qris') totQ+=amt; else totT+=amt; subByCat[inp.dataset.cat]=(subByCat[inp.dataset.cat]||0)+amt; });
+    document.querySelectorAll('.rev-amt').forEach(inp=>{ const a=num(inp.value); if(inp.dataset.metode==='qris') totQ+=a; else totT+=a; });
     Object.keys(subByCat).forEach(cat=>{ const sb=document.querySelector('.rev-sub[data-cat="'+cat+'"]'); if(sb) sb.textContent=rp(subByCat[cat]); });
     const tt=$('#ri-tot-tunai'); if(tt) tt.textContent=rp(totT);
     const tq=$('#ri-tot-qris'); if(tq) tq.textContent=rp(totQ);
     const t=$('#ri-total'); if(t) t.textContent=rp(totT+totQ);
   };
-  document.querySelectorAll('.rev-qty').forEach(inp=> inp.addEventListener('input', ()=>{ inp.value=inp.value.replace(/[^\d]/g,''); recalc(); }));
+  document.querySelectorAll('.rev-qty, .rev-amt').forEach(inp=> inp.addEventListener('input', ()=>{ inp.value=inp.value.replace(/[^\d]/g,''); recalc(); }));
   const save=$('#ri-save'); if(save) save.addEventListener('click', async ()=>{
     const tgl=$('#ri-tgl').value; const note=$('#ri-note').value.trim();
-    const entries=[]; document.querySelectorAll('.rev-qty').forEach(inp=>{ const q=num(inp.value); if(q>0){ const h=Number(inp.dataset.harga)||0; entries.push({ kategori_id:inp.dataset.cat, qty:q, amount:q*h, metode:inp.dataset.metode }); } });
-    if(entries.length===0){ toast('Isi minimal satu jumlah','err'); return; }
+    const entries=[];
+    document.querySelectorAll('.rev-qty').forEach(inp=>{ const q=num(inp.value); if(q>0){ const h=Number(inp.dataset.harga)||0; entries.push({ kategori_id:inp.dataset.cat, qty:q, amount:q*h, metode:inp.dataset.metode, catatan:note }); } });
+    document.querySelectorAll('.rev-amt').forEach(inp=>{ const a=num(inp.value); if(a>0){ const ke=document.querySelector('.rev-ket[data-cat="'+inp.dataset.cat+'"]'); const ket=(ke&&ke.value.trim())||note; entries.push({ kategori_id:inp.dataset.cat, qty:null, amount:a, metode:inp.dataset.metode, catatan:ket }); } });
+    if(entries.length===0){ toast('Isi minimal satu nominal','err'); return; }
     save.disabled=true; save.textContent='Menyimpan\u2026';
-    for(const e of entries){ await DB.insert('revenues', { tanggal:tgl, kategori_id:e.kategori_id, qty:e.qty, amount:e.amount, metode:e.metode, catatan:note, created_by:State.user.id, created_by_name:State.user.full_name||State.user.username }, { returnRow:false }); }
+    for(const e of entries){ await DB.insert('revenues', { tanggal:tgl, kategori_id:e.kategori_id, qty:e.qty, amount:e.amount, metode:e.metode, catatan:e.catatan, created_by:State.user.id, created_by_name:State.user.full_name||State.user.username }, { returnRow:false }); }
     toast('Laporan pendapatan tersimpan ('+entries.length+' entri)','ok');
     $('#modal-root').innerHTML=''; renderPage('pendapatan');
   });
@@ -971,10 +991,11 @@ function openHargaModal(cats){
    ============================================================ */
 async function pagePengeluaran(c){
   const cats=(await DB.all('exp_categories')).sort((a,b)=>(a.sort||0)-(b.sort||0));
-  const exps=(await DB.all('expenses')).sort((a,b)=> (b.tanggal||'').localeCompare(a.tanggal||'') || (b.created_at||'').localeCompare(a.created_at||''));
+  let exps=(await DB.all('expenses')).sort((a,b)=> (b.tanggal||'').localeCompare(a.tanggal||'') || (b.created_at||'').localeCompare(a.created_at||''));
+  if(State.user.role==='spv') exps=exps.filter(e=>(e.sumber||'kas')!=='rekening');
   const now=new Date(); const def=monthRange(now.getFullYear(), now.getMonth());
   State.cache.expFilter = State.cache.expFilter || { start:def.start, end:def.end, kat:'' };
-  c.innerHTML = pageHead('Pengeluaran','Dicatat oleh manajer • diambil dari kas, diganti per periode',
+  c.innerHTML = pageHead('Pengeluaran', State.user.role==='spv'?'Pengeluaran kas operasional':'Semua pengeluaran (kas & rekening)',
       '<button class="btn btn-accent" id="add-exp">'+icon('plus',18)+' Catat Pengeluaran</button>')
     + '<div class="card"><div class="card-pad"><div class="filterbar">'
       +'<div class="field"><label class="label">Dari</label><input class="input" type="date" id="ef-start" value="'+State.cache.expFilter.start+'"></div>'
@@ -995,8 +1016,8 @@ function drawExpList(exps){
   const list=filterExps(exps); const total=sum(list,e=>e.amount);
   $('#exp-count').innerHTML = list.length+' transaksi · <span class="neg">'+rp(total)+'</span>';
   if(list.length===0){ $('#exp-list').innerHTML=emptyState('expense','Belum ada pengeluaran','Catat pengeluaran maintenance, operasional, gaji, atau perbaikan.'); return; }
-  $('#exp-list').innerHTML='<div class="table-wrap"><table class="tbl"><thead><tr><th>Tanggal</th><th>Kategori</th><th>Deskripsi</th><th>Oleh</th><th class="num">Nominal</th><th></th></tr></thead><tbody>'
-    + list.map(e=> '<tr><td>'+fmtDate(e.tanggal)+'</td><td><span class="badge badge-grey">'+esc(e.kategori)+'</span></td><td>'+esc(e.deskripsi||'—')+'</td><td class="muted small">'+esc(e.created_by_name||'')+'</td><td class="num strong neg">−'+rp(e.amount)+'</td>'
+  $('#exp-list').innerHTML='<div class="table-wrap"><table class="tbl"><thead><tr><th>Tanggal</th><th>Kategori</th><th>Sumber</th><th>Deskripsi</th><th>Oleh</th><th class="num">Nominal</th><th></th></tr></thead><tbody>'
+    + list.map(e=> '<tr><td>'+fmtDate(e.tanggal)+'</td><td><span class="badge badge-grey">'+esc(e.kategori)+'</span></td><td><span class="badge '+((e.sumber||'kas')==='rekening'?'badge-qris':'badge-pos')+'">'+((e.sumber||'kas')==='rekening'?'Rekening':'Kas')+'</span></td><td>'+esc(e.deskripsi||'—')+'</td><td class="muted small">'+esc(e.created_by_name||'')+'</td><td class="num strong neg">−'+rp(e.amount)+'</td>'
       +'<td class="num"><div class="t-actions"><button class="iconbtn" data-edit-exp="'+e.id+'">'+icon('edit',15)+'</button><button class="iconbtn del" data-del-exp="'+e.id+'">'+icon('trash',15)+'</button></div></td></tr>').join('')
     +'</tbody></table></div>';
   document.querySelectorAll('[data-edit-exp]').forEach(b=> b.addEventListener('click', async ()=>{ const cats=(await DB.all('exp_categories')); openExpenseModal(cats, exps.find(e=>e.id===b.dataset.editExp)); }));
@@ -1004,34 +1025,29 @@ function drawExpList(exps){
 }
 async function openExpenseModalQuick(){ const cats=await DB.all('exp_categories'); openExpenseModal(cats.sort((a,b)=>(a.sort||0)-(b.sort||0)), null); }
 function openExpenseModal(cats, row){
-  const isEdit=!!row; let proofData = row? (row.bukti||null) : null;
+  const isEdit=!!row;
   let opts=cats.map(k=>'<option value="'+esc(k.name)+'" '+(row&&row.kategori===k.name?'selected':'')+'>'+esc(k.name)+'</option>').join('');
   if(row && row.kategori && !cats.some(k=>k.name===row.kategori)) opts = '<option value="'+esc(row.kategori)+'" selected>'+esc(row.kategori)+'</option>' + opts;
-  const src=row? (row.sumber||'kas') : 'kas';
+  const roleSumber = (State.user.role==='spv') ? 'kas' : 'rekening';
+  const sumberInfo = (State.user.role==='spv') ? 'Pengeluaran ini mengurangi <b>Kas (tunai)</b>.' : 'Pengeluaran ini mengurangi <b>Rekening (bank)</b>.';
   openModal({
-    title:isEdit?'Edit Pengeluaran':'Catat Pengeluaran', sub:'Pilih dibayar dari Kas atau Rekening',
+    title:isEdit?'Edit Pengeluaran':'Catat Pengeluaran', sub:(State.user.role==='spv'?'Diambil dari Kas (tunai)':'Diambil dari Rekening (bank)'),
     body:'<div class="form-grid">'
       +'<div class="field"><label class="label">Kategori <span class="req">*</span></label><select class="select" id="e-kat">'+opts+'</select></div>'
       +'<div class="field"><label class="label">Tanggal <span class="req">*</span></label><input class="input" type="date" id="e-tgl" value="'+(row?row.tanggal:todayStr())+'"></div>'
-      +'<div class="field full"><label class="label">Dibayar dari <span class="req">*</span></label><div class="seg" id="e-src" style="flex-wrap:wrap"><button class="'+(src!=='rekening'?'on':'')+'" data-s="kas">Kas (tunai)</button><button class="'+(src==='rekening'?'on':'')+'" data-s="rekening">Rekening (bank)</button></div></div>'
       +'<div class="field full"><label class="label">Nominal (Rp) <span class="req">*</span></label><input class="input tnum" id="e-amt" inputmode="numeric" placeholder="0" value="'+(row?row.amount:'')+'"></div>'
       +'<div class="field full"><label class="label">Deskripsi</label><input class="input" id="e-desc" placeholder="mis. servis pompa, beli ATK" value="'+esc(row?row.deskripsi||'':'')+'"></div>'
-      +'<div class="field full"><label class="label">Bukti (foto/struk, opsional)</label><div class="uploader'+(proofData?' has':'')+'" id="e-up">'+(proofData?'<img src="'+proofData+'">':'<div class="up-label">'+icon('upload',20)+'<br>Ketuk untuk unggah</div>')+'</div><input type="file" id="e-file" accept="image/*" style="display:none"></div>'
+      +'<div class="field full"><div class="hintline">'+sumberInfo+'</div></div>'
       +'</div>',
     okText:isEdit?'Simpan Perubahan':'Simpan',
     onOk: async ()=>{
       const amount=num($('#e-amt').value); if(amount<=0){ toast('Nominal harus diisi','err'); return false; }
-      const sumber=document.querySelector('#e-src button.on').dataset.s;
-      const data={ tanggal:$('#e-tgl').value, kategori:$('#e-kat').value, amount, sumber, deskripsi:$('#e-desc').value.trim(), bukti:proofData };
-      if(isEdit){ await DB.update('expenses', row.id, data); toast('Pengeluaran diperbarui','ok'); }
-      else { data.created_by=State.user.id; data.created_by_name=State.user.full_name||State.user.username; await DB.insert('expenses', data); toast('Pengeluaran tersimpan','ok'); }
+      if(isEdit){ await DB.update('expenses', row.id, { tanggal:$('#e-tgl').value, kategori:$('#e-kat').value, amount, deskripsi:$('#e-desc').value.trim() }); toast('Pengeluaran diperbarui','ok'); }
+      else { await DB.insert('expenses', { tanggal:$('#e-tgl').value, kategori:$('#e-kat').value, amount, sumber:roleSumber, deskripsi:$('#e-desc').value.trim(), created_by:State.user.id, created_by_name:State.user.full_name||State.user.username }); toast('Pengeluaran tersimpan','ok'); }
       renderPage(State.page); return true;
     }
   });
   attachThousand('e-amt');
-  document.querySelectorAll('#e-src button').forEach(b=> b.addEventListener('click', ()=>{ document.querySelectorAll('#e-src button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); }));
-  const up=$('#e-up'), file=$('#e-file'); up.addEventListener('click', ()=>file.click());
-  file.addEventListener('change', async ()=>{ if(file.files[0]){ proofData=await fileToResizedDataURL(file.files[0]); up.classList.add('has'); up.innerHTML='<img src="'+proofData+'">'; } });
 }
 
 /* ============================================================
@@ -1288,7 +1304,7 @@ async function openSettlementDetail(s){
       +'</div>'
       +'<div class="card" style="box-shadow:none;border-color:var(--line)"><div class="card-head"><h3>Transfer ke KPH (tercatat di Pengeluaran)</h3><span class="pill">Terkirim '+rp(totPay)+' / '+rp(totalKph)+'</span></div>'
         +'<div id="pay-list" style="padding:6px 0"></div>'
-        +'<div class="card-pad" style="border-top:1px solid var(--line-2)"><button class="btn btn-accent btn-sm" id="add-pay">'+icon('plus',16)+' Catat transfer + bukti</button></div>'
+        +'<div class="card-pad" style="border-top:1px solid var(--line-2)"><button class="btn btn-accent btn-sm" id="add-pay">'+icon('plus',16)+' Catat transfer ke KPH</button></div>'
       +'</div>',
     okText:'Tutup', hideCancel:true, onOk: async ()=> true
   });
@@ -1298,40 +1314,33 @@ async function openSettlementDetail(s){
 function drawPayList(s, pays){
   const el=$('#pay-list'); if(!el) return;
   if(pays.length===0){ el.innerHTML='<div class="empty" style="padding:24px"><p>Belum ada transfer ke KPH. Catat di sini, otomatis masuk ke Pengeluaran.</p></div>'; return; }
-  el.innerHTML='<div class="table-wrap"><table class="tbl"><thead><tr><th>Tanggal</th><th>Sumber</th><th>Bukti</th><th>Catatan</th><th class="num">Nominal</th><th></th></tr></thead><tbody>'
-    + pays.map(p=>'<tr><td>'+fmtDate(p.tanggal)+'</td><td><span class="badge '+(p.sumber==='rekening'?'badge-qris':'badge-pos')+'">'+(p.sumber==='rekening'?'Rekening':'Kas')+'</span></td>'
-      +'<td>'+(p.bukti?'<img class="proof-thumb" src="'+p.bukti+'" data-pp="'+p.id+'">':'<span class="muted small">—</span>')+'</td><td>'+esc(p.deskripsi||'—')+'</td><td class="num strong">'+rp(p.amount)+'</td>'
+  el.innerHTML='<div class="table-wrap"><table class="tbl"><thead><tr><th>Tanggal</th><th>Sumber</th><th>Catatan</th><th class="num">Nominal</th><th></th></tr></thead><tbody>'
+    + pays.map(p=>'<tr><td>'+fmtDate(p.tanggal)+'</td><td><span class="badge badge-qris">Rekening</span></td>'
+      +'<td>'+esc(p.deskripsi||'—')+'</td><td class="num strong">'+rp(p.amount)+'</td>'
       +'<td class="num"><button class="iconbtn del" data-delpay="'+p.id+'">'+icon('trash',15)+'</button></td></tr>').join('')
     +'</tbody></table></div>';
-  el.querySelectorAll('[data-pp]').forEach(img=> img.addEventListener('click', ()=>openImage(img.src)));
   el.querySelectorAll('[data-delpay]').forEach(b=> b.addEventListener('click', async ()=>{ await DB.remove('expenses', b.dataset.delpay); toast('Transfer dihapus','ok'); const fresh=(await DB.all('expenses')).filter(x=>x.settlement_id===s.id); drawPayList(s, fresh); }));
 }
 function openPaymentModal(s){
-  let proofData=null;
   const totalKph = s.total_kph!=null ? s.total_kph : ((s.amount_negara||0)+(s.pnbp||0)+(s.total_nilai_tiket||0));
   openModal({
-    title:'Catat Transfer ke KPH', sub:s.periode_label,
+    title:'Catat Transfer ke KPH', sub:'Otomatis mengurangi Rekening',
     body:'<div class="form-grid">'
       +'<div class="field"><label class="label">Tanggal <span class="req">*</span></label><input class="input" type="date" id="p-tgl" value="'+todayStr()+'"></div>'
       +'<div class="field"><label class="label">Nominal (Rp) <span class="req">*</span></label><input class="input tnum" id="p-amt" inputmode="numeric" value="'+Math.round(totalKph)+'"></div>'
-      +'<div class="field full"><label class="label">Dibayar dari <span class="req">*</span></label><div class="seg" id="p-src" style="flex-wrap:wrap"><button class="on" data-s="rekening">Rekening (bank)</button><button data-s="kas">Kas (tunai)</button></div></div>'
       +'<div class="field full"><label class="label">Catatan</label><input class="input" id="p-note" placeholder="mis. transfer BRI a.n. KPH ..."></div>'
-      +'<div class="field full"><label class="label">Bukti transfer (foto/struk)</label><div class="uploader" id="p-up"><div class="up-label">'+icon('upload',20)+'<br>Ketuk untuk unggah bukti</div></div><input type="file" id="p-file" accept="image/*" style="display:none"></div>'
+      +'<div class="field full"><div class="hintline">Transfer ini tercatat di Pengeluaran dan mengurangi <b>Rekening (bank)</b>.</div></div>'
       +'</div>',
     okText:'Simpan',
     onOk: async ()=>{
       const amount=num($('#p-amt').value); if(amount<=0){ toast('Nominal harus diisi','err'); return false; }
-      const sumber=document.querySelector('#p-src button.on').dataset.s;
       const note=$('#p-note').value.trim();
-      await DB.insert('expenses', { tanggal:$('#p-tgl').value, kategori:'Bagi Hasil KPH', amount, sumber, settlement_id:s.id, deskripsi:note||('Bagi hasil '+s.periode_label), bukti:proofData, created_by:State.user.id, created_by_name:State.user.full_name||State.user.username });
+      await DB.insert('expenses', { tanggal:$('#p-tgl').value, kategori:'Bagi Hasil KPH', amount, sumber:'rekening', settlement_id:s.id, deskripsi:note||('Bagi hasil '+s.periode_label), created_by:State.user.id, created_by_name:State.user.full_name||State.user.username });
       toast('Transfer dicatat & masuk Pengeluaran','ok');
       const fresh=(await DB.all('expenses')).filter(x=>x.settlement_id===s.id); drawPayList(s, fresh); return true;
     }
   });
   attachThousand('p-amt');
-  document.querySelectorAll('#p-src button').forEach(b=> b.addEventListener('click', ()=>{ document.querySelectorAll('#p-src button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); }));
-  const up=$('#p-up'), file=$('#p-file'); up.addEventListener('click', ()=>file.click());
-  file.addEventListener('change', async ()=>{ if(file.files[0]){ proofData=await fileToResizedDataURL(file.files[0]); up.classList.add('has'); up.innerHTML='<img src="'+proofData+'">'; } });
 }
 
 /* ============================================================
@@ -1547,20 +1556,17 @@ async function openGajiCalc(){
       +'<div class="field"><label class="label">Bulan gajian</label><select class="select" id="g-month">'+monthOpts+'</select></div>'
       +'<div class="field"><label class="label">Tahun</label><select class="select" id="g-year">'+yearOpts+'</select></div>'
       +'<div class="field"><label class="label">Periode</label><div class="seg" id="g-mode" style="flex-wrap:wrap"><button class="on" data-md="28">Siklus 28</button><button data-md="full">Bulan penuh</button></div></div>'
-      +'<div class="field"><label class="label">Dibayar dari</label><div class="seg" id="g-src" style="flex-wrap:wrap"><button class="on" data-s="rekening">Rekening</button><button data-s="kas">Kas</button></div></div>'
       +'<button class="btn btn-primary btn-sm" id="g-load">Tarik data</button>'
     +'</div><div id="g-calc"></div>',
     okText:'Simpan & Catat Pengeluaran', okDisabled:true,
     onOk: async ()=>{ const snap=window.__gajiSnap; if(!snap){ toast('Tarik data dulu','err'); return false; }
-      const sumber=document.querySelector('#g-src button.on').dataset.s;
       const saved=await DB.insert('payrolls', snap); const pid=saved&&saved.id?saved.id:null;
       const ep=String(snap.end).split('-'); const payDate=ep[0]+'-'+ep[1]+'-28';
-      await DB.insert('expenses', { tanggal:payDate, kategori:'Gaji', amount:snap.total, sumber, payroll_id:pid, deskripsi:'Gaji '+snap.periode_label, created_by:State.user.id, created_by_name:State.user.full_name||State.user.username });
+      await DB.insert('expenses', { tanggal:payDate, kategori:'Gaji', amount:snap.total, sumber:'rekening', payroll_id:pid, deskripsi:'Gaji '+snap.periode_label, created_by:State.user.id, created_by_name:State.user.full_name||State.user.username });
       toast('Gaji disimpan & masuk Pengeluaran','ok'); renderPage('gaji'); return true; }
   });
   let mode='28';
   document.querySelectorAll('#g-mode button').forEach(b=> b.addEventListener('click', ()=>{ document.querySelectorAll('#g-mode button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); mode=b.dataset.md; }));
-  document.querySelectorAll('#g-src button').forEach(b=> b.addEventListener('click', ()=>{ document.querySelectorAll('#g-src button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); }));
   $('#g-load').addEventListener('click', async ()=>{
     const y=Number($('#g-year').value), m=Number($('#g-month').value); let rng;
     if(mode==='full'){ const r=monthRange(y,m); rng={start:r.start, end:r.end, label:'Bulan '+MONTHS[m]+' '+y}; }
@@ -1615,6 +1621,7 @@ async function pageLaporan(c){
     +'<div class="card mb-lg"><div class="card-pad"><div class="filterbar">'
       +'<div class="field"><label class="label">Dari</label><input class="input" type="date" id="rp-start" value="'+State.cache.repFilter.start+'"></div>'
       +'<div class="field"><label class="label">Sampai</label><input class="input" type="date" id="rp-end" value="'+State.cache.repFilter.end+'"></div>'
+      +'<button class="btn btn-primary btn-sm" id="rp-show">'+icon('check',15)+' Tampilkan</button>'
       +'<button class="btn btn-subtle btn-sm" id="rp-now">Bulan ini</button>'
       +'<button class="btn btn-subtle btn-sm" id="rp-h1">Tgl 1–15</button>'
       +'<button class="btn btn-subtle btn-sm" id="rp-h2">Tgl 16–akhir</button>'
@@ -1622,7 +1629,7 @@ async function pageLaporan(c){
     +'</div></div></div>'
     +'<div id="rp-body"></div>';
   const draw=()=> drawReport(revs, exps, map, cats);
-  ['rp-start','rp-end'].forEach(id=> $('#'+id).addEventListener('change', ()=>{ State.cache.repFilter={ start:$('#rp-start').value, end:$('#rp-end').value }; draw(); }));
+  $('#rp-show').addEventListener('click', ()=>{ State.cache.repFilter={ start:$('#rp-start').value, end:$('#rp-end').value }; draw(); });
   $('#rp-now').addEventListener('click', ()=>{ const d=monthRange(now.getFullYear(), now.getMonth()); setRep(d.start,d.end,draw); });
   $('#rp-h1').addEventListener('click', ()=>{ const d=halfRange(now.getFullYear(), now.getMonth(),1); setRep(d.start,d.end,draw); });
   $('#rp-h2').addEventListener('click', ()=>{ const d=halfRange(now.getFullYear(), now.getMonth(),2); setRep(d.start,d.end,draw); });
@@ -1652,11 +1659,11 @@ function drawReport(revs, exps, map, cats){
   const R=revs.filter(r=>inRange(r.tanggal,f.start,f.end));
   const totRev=sum(R,r=>r.amount), net=totRev-totExp;
   // per kategori pendapatan
-  const revByCat={}; const tiketRev={}, videoRev={};
-  R.forEach(r=>{ const cat=map[r.kategori_id]; const k=cat?cat.name:'Lainnya'; revByCat[k]=(revByCat[k]||0)+r.amount; if(cat&&cat.type==='video') videoRev[k]=(videoRev[k]||0)+r.amount; else tiketRev[k]=(tiketRev[k]||0)+r.amount; });
+  const revByCat={}; const tiketRev={}, videoRev={}, lainRev={};
+  R.forEach(r=>{ const cat=map[r.kategori_id]; const k=cat?cat.name:'Lainnya'; revByCat[k]=(revByCat[k]||0)+r.amount; const tp=cat?cat.type:'tiket'; if(tp==='video') videoRev[k]=(videoRev[k]||0)+r.amount; else if(tp==='lain') lainRev[k]=(lainRev[k]||0)+r.amount; else tiketRev[k]=(tiketRev[k]||0)+r.amount; });
   // metode
   const tunai=sum(R.filter(r=>r.metode==='tunai'),r=>r.amount), qris=sum(R.filter(r=>r.metode==='qris'),r=>r.amount);
-  const totTiket=sum(Object.values(tiketRev)), totVideo=sum(Object.values(videoRev));
+  const totTiket=sum(Object.values(tiketRev)), totVideo=sum(Object.values(videoRev)), totLain=sum(Object.values(lainRev));
 
   $('#rp-body').innerHTML =
     '<div class="grid g-4 mb-lg">'
@@ -1667,11 +1674,11 @@ function drawReport(revs, exps, map, cats){
     +'</div>'
     +'<div class="grid g-2 mb-lg">'
       +'<div class="card"><div class="card-head"><h3>Pendapatan per kategori</h3><span class="pill">'+fmtDate(f.start)+' – '+fmtDate(f.end)+'</span></div><div class="card-pad">'+barChart(revByCat, totRev, 'pine')
-        +'<div class="kpi-line big" style="margin-top:10px"><span class="k-l">Tiket</span><span class="k-v">'+rp(totTiket)+'</span></div><div class="kpi-line"><span class="k-l">Video</span><span class="k-v">'+rp(totVideo)+'</span></div></div></div>'
+        +'<div class="kpi-line big" style="margin-top:10px"><span class="k-l">Tiket</span><span class="k-v">'+rp(totTiket)+'</span></div><div class="kpi-line"><span class="k-l">Video</span><span class="k-v">'+rp(totVideo)+'</span></div>'+(totLain>0?'<div class="kpi-line"><span class="k-l">Lain-lain</span><span class="k-v">'+rp(totLain)+'</span></div>':'')+'</div></div>'
       +'<div class="card"><div class="card-head"><h3>Pengeluaran per kategori</h3></div><div class="card-pad">'+barChart(expByCat, totExp, 'neg')+'</div></div>'
     +'</div>'
     +'<div class="card"><div class="card-head"><h3>Rekap kategori</h3></div><div class="table-wrap"><table class="tbl"><thead><tr><th>Kategori</th><th>Jenis</th><th class="num">Nilai</th><th class="num">% dari total</th></tr></thead><tbody>'
-      + Object.entries(revByCat).sort((a,b)=>b[1]-a[1]).map(([k,v])=>{ const cat=cats.find(c=>c.name===k); const isV=cat&&cat.type==='video'; return '<tr><td>'+esc(k)+'</td><td><span class="badge '+(isV?'badge-video':'badge-tiket')+'">'+(isV?'Video':'Tiket')+'</span></td><td class="num pos strong">+'+rp(v)+'</td><td class="num muted">'+(totRev?((v/totRev)*100).toFixed(1):0)+'%</td></tr>'; }).join('')
+      + Object.entries(revByCat).sort((a,b)=>b[1]-a[1]).map(([k,v])=>{ const cat=cats.find(c=>c.name===k); const tp=cat?cat.type:'tiket'; const jl=tp==='video'?'Video':(tp==='lain'?'Lain-lain':'Tiket'); const bc=tp==='video'?'badge-video':(tp==='lain'?'badge-grey':'badge-tiket'); return '<tr><td>'+esc(k)+'</td><td><span class="badge '+bc+'">'+jl+'</span></td><td class="num pos strong">+'+rp(v)+'</td><td class="num muted">'+(totRev?((v/totRev)*100).toFixed(1):0)+'%</td></tr>'; }).join('')
       + Object.entries(expByCat).sort((a,b)=>b[1]-a[1]).map(([k,v])=>'<tr><td>'+esc(k)+'</td><td><span class="badge badge-grey">Pengeluaran</span></td><td class="num neg strong">−'+rp(v)+'</td><td class="num muted">'+(totExp?((v/totExp)*100).toFixed(1):0)+'%</td></tr>').join('')
     +'</tbody></table></div></div>';
 }
